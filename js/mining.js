@@ -2,8 +2,6 @@
   "use strict";
   const D = window.Deepworks,
     S = D.state,
-    c = document.getElementById("mineCanvas"),
-    ctx = c.getContext("2d"),
     terrain = document.createElement("canvas"),
     tx = terrain.getContext("2d");
   D.Mining = {};
@@ -116,12 +114,11 @@
     bombs = [];
     terrainDirty = true;
     makeCaches();
-    M.draw();
   }
   function resize() {
     let nw = W(),
       nh = H(),
-      d = Math.min(devicePixelRatio || 1, 2);
+      d = Math.min(2, Math.max(1, D.Engine.scale * D.Engine.dpr));
     if (ground.length && w0 && h0 && (w0 !== nw || h0 !== nh)) {
       let old = ground.slice(),
         ow = w0,
@@ -155,16 +152,12 @@
     }
     w0 = nw;
     h0 = nh;
-    c.width = nw * d;
-    c.height = nh * d;
-    terrain.width = c.width;
-    terrain.height = c.height;
-    ctx.setTransform(d, 0, 0, d, 0, 0);
+    terrain.width = Math.round(nw * d);
+    terrain.height = Math.round(nh * d);
     tx.setTransform(d, 0, 0, d, 0, 0);
     dpr = d;
     terrainDirty = true;
     if (!ground.length) makeWorld();
-    else M.draw();
   }
   function countOre() {
     return Object.values(S.ore).reduce((a, b) => a + b, 0);
@@ -172,96 +165,7 @@
   function goal() {
     return (420 + S.depth * 160) * 5;
   }
-  // Write to the DOM only when the content actually changed.
-  function setHTML(id, html) {
-    const el = document.getElementById(id);
-    if (el._h !== html) {
-      el._h = html;
-      el.innerHTML = html;
-    }
-  }
-  function updateUI() {
-    document.getElementById("level").textContent = document.getElementById(
-      "currentLevel",
-    ).textContent = S.depth + 1;
-    document.getElementById("money").textContent = Math.floor(S.money);
-    document.getElementById("banked").textContent = Object.values(
-      S.stock,
-    ).reduce((a, b) => a + b, 0);
-    setHTML(
-      "oreList",
-      D.ores
-        .map(
-          (o) =>
-            '<div class="resource" title="' +
-            o.name +
-            " is used to craft factory parts and sells for " +
-            o.value +
-            ' credits per unit."><span><i class="ore-dot" style="background:' +
-            o.color +
-            '"></i>' +
-            o.name +
-            " · ¢" +
-            o.value +
-            "</span><b>" +
-            S.ore[o.id] +
-            "</b></div>",
-        )
-        .join(""),
-    );
-    setHTML(
-      "weaponStockList",
-      Object.keys(D.weapons)
-        .map(
-          (k) =>
-            '<div class="resource"><span>' +
-            D.weapons[k].icon +
-            " " +
-            D.weapons[k].name +
-            "</span><b>" +
-            S.stock[k] +
-            "</b></div>",
-        )
-        .join(""),
-    );
-    document.getElementById("levelProgress").style.width =
-      Math.min(100, (S.digScore / goal()) * 100) + "%";
-    document.getElementById("progressText").textContent =
-      Math.floor(S.digScore) +
-      " / " +
-      goal() +
-      " ground cleared for next level";
-    document.getElementById("advanceLevel").disabled = S.digScore < goal();
-    setHTML(
-      "weapons",
-      Object.keys(D.weapons)
-        .map(
-          (k) =>
-            '<button class="weapon ' +
-            (S.selectedWeapon === k ? "active" : "") +
-            '" title="' +
-            D.weapons[k].name +
-            " · Recipe: " +
-            Object.entries(D.weapons[k].recipe)
-              .filter(([r]) => r !== "seconds")
-              .map(([r, n]) => n + " " + (r === "grenade" ? "hand grenade" : r))
-              .join(" + ") +
-            '" data-w="' +
-            k +
-            '" ' +
-            (S.stock[k] < 1 ? "disabled" : "") +
-            ">" +
-            D.weapons[k].icon +
-            " " +
-            D.weapons[k].name +
-            " · " +
-            S.stock[k] +
-            "</button>",
-        )
-        .join(""),
-    );
-    D.Factory.refresh();
-  }
+  function updateUI() {} // panels are drawn live by the scene
   // Craters are true circles centred on the explosion. The ground is a
   // height map, so a column is lowered to the bottom of the circle; columns
   // whose surface sits above the circle (it would be a cave) are left alone.
@@ -455,14 +359,13 @@
     tx.lineWidth = 4;
     tx.stroke();
   }
-  M.draw = () => {
+  M.drawWorld = (ctx) => {
     let w = W(),
       h = H();
     if (terrainDirty) {
       renderTerrain();
       terrainDirty = false;
     }
-    ctx.clearRect(0, 0, w, h);
     ctx.save();
     if (shake) {
       ctx.translate(
@@ -749,19 +652,11 @@
       });
     }
   }
-  let frameRunning = false,
-    lastFrameAt = 0;
-  function scheduleFrame() {
-    if (!frameRunning) {
-      frameRunning = true;
-      lastFrameAt = 0;
-      requestAnimationFrame(frame);
-    }
-  }
+  function scheduleFrame() {}
   let physAcc = 0;
-  function frame(now) {
-    let scale = lastFrameAt ? Math.min(3, (now - lastFrameAt) / 16.6667) : 1;
-    lastFrameAt = now;
+  // Advance bombs / effects by `frames` 60Hz-frames (real time * 60).
+  M.update = (frames) => {
+    const scale = Math.min(3, frames);
     let animate = false;
     for (let i = rings.length - 1; i >= 0; i--) {
       rings[i].r += (rings[i].max || 64) * 0.1 * scale;
@@ -801,14 +696,7 @@
       animate = true;
       if (p.t <= 0) dust.splice(i, 1);
     }
-    if (animate) {
-      M.draw();
-      requestAnimationFrame(frame);
-    } else {
-      frameRunning = false;
-      lastFrameAt = 0;
-    }
-  }
+  };
   M.init = () => {
     let z = D.mineSave;
     if (z && Array.isArray(z.ground) && Array.isArray(z.caches)) {
@@ -820,90 +708,59 @@
       h0 = z.h || 0;
     }
     resize();
-    updateUI();
-    const point = (e) => {
-      let r = c.getBoundingClientRect();
-      return {
-        x: ((e.clientX - r.left) * W()) / (r.width || W()),
-        y: ((e.clientY - r.top) * H()) / (r.height || H()),
-      };
-    };
-    c.addEventListener("pointermove", (e) => {
-      let p = point(e);
-      aimX = p.x;
-      aimY = p.y;
-      if (aimStart && e.pointerId === aimStart.id) {
-        aimPointer = p;
-        M.draw();
-      }
-    });
-    c.addEventListener("pointerdown", (e) => {
-      if (e.button !== undefined && e.button !== 0) return;
-      let p = point(e);
-      aimX = p.x;
-      aimY = p.y;
-      aimStart = { ...p, id: e.pointerId };
-      aimPointer = p;
-      c.setPointerCapture(e.pointerId);
-      M.draw();
-    });
-    c.addEventListener("pointerup", (e) => {
-      if (!aimStart || e.pointerId !== aimStart.id) return;
-      let start = aimStart,
-        p = point(e),
-        dx = p.x - start.x,
-        dy = p.y - start.y,
-        len = Math.hypot(dx, dy);
-      aimStart = null;
-      aimPointer = null;
-      if (len < 7) drop(start.x, start.y);
-      else {
-        let speed = Math.min(150, len) * 0.08 * (1 + S.skills.throwForce * 0.1);
-        launchBomb(start.x, start.y, (dx / len) * speed, (dy / len) * speed);
-      }
-      M.draw();
-    });
-    c.addEventListener("pointercancel", (e) => {
-      if (aimStart && e.pointerId === aimStart.id) {
-        aimStart = null;
-        aimPointer = null;
-        M.draw();
-      }
-    });
-    document.addEventListener("keydown", (e) => {
-      if (
-        e.code === "Space" &&
-        document.getElementById("mining").classList.contains("active")
-      ) {
-        e.preventDefault();
-        drop(aimX, aimY);
-      }
-    });
-    document.getElementById("weapons").onclick = (e) => {
-      let b = e.target.closest("[data-w]");
-      if (b && S.stock[b.dataset.w] > 0) {
-        S.selectedWeapon = b.dataset.w;
-        updateUI();
-      }
-    };
-    document.getElementById("resetMine").onclick = () => {
-      makeWorld();
-      updateUI();
-      window.DeepworksUI.note(
-        "Mining zone reset. Your ore cargo and factory are safe.",
-      );
-    };
-    document.getElementById("advanceLevel").onclick = () => {
-      if (S.digScore < goal()) return;
-      S.digScore = 0;
-      S.depth++;
-      makeWorld();
-      updateUI();
-      window.DeepworksUI.note(
-        "You descended to level " + (S.depth + 1) + ". New ores are rarer.",
-      );
-    };
+    D.Engine.onResize.push(resize);
   };
+  // Pointer input arrives in world coordinates (the scene subtracts its origin).
+  M.pointerDown = (x, y) => {
+    aimX = x;
+    aimY = y;
+    aimStart = { x, y };
+    aimPointer = { x, y };
+  };
+  M.pointerMove = (x, y) => {
+    aimX = x;
+    aimY = y;
+    if (aimStart) aimPointer = { x, y };
+  };
+  M.pointerUp = (x, y, ok) => {
+    if (!aimStart) return;
+    const start = aimStart;
+    aimStart = null;
+    aimPointer = null;
+    if (!ok) return;
+    const dx = x - start.x,
+      dy = y - start.y,
+      len = Math.hypot(dx, dy);
+    if (len < 7) drop(start.x, start.y);
+    else {
+      const speed = Math.min(150, len) * 0.08 * (1 + S.skills.throwForce * 0.1);
+      launchBomb(start.x, start.y, (dx / len) * speed, (dy / len) * speed);
+    }
+  };
+  M.drop = () => drop(aimX, aimY);
+  M.aiming = () => !!aimStart;
+  M.selectWeapon = (k) => {
+    if (S.stock[k] > 0) S.selectedWeapon = k;
+  };
+  M.resetWorld = () => {
+    makeWorld();
+    window.DeepworksUI.note(
+      "Mining zone reset. Your ore cargo and factory are safe.",
+    );
+  };
+  M.advance = () => {
+    if (S.digScore < goal()) return false;
+    S.digScore = 0;
+    S.depth++;
+    makeWorld();
+    window.DeepworksUI.note(
+      "You descended to level " + (S.depth + 1) + ". New ores are rarer.",
+    );
+    return true;
+  };
+  M.goal = goal;
+  M.W = W;
+  M.H = H;
   M.updateUI = updateUI;
   M.resize = resize;
   M.saveData = () => ({ ground, caches, w: w0, h: h0 });

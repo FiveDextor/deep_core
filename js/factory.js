@@ -105,27 +105,6 @@
       requires: { id: "storage", level: 2 },
     },
   ];
-  // Write to the DOM only when the content actually changed.
-  function setHTML(id, html) {
-    const el = document.getElementById(id);
-    if (el._h !== html) {
-      el._h = html;
-      el.innerHTML = html;
-    }
-  }
-  function setText(id, text) {
-    const el = document.getElementById(id);
-    if (el._t !== text) {
-      el._t = text;
-      el.textContent = text;
-    }
-  }
-  const screenOn = (id) =>
-    document.getElementById(id).classList.contains("active");
-  const packetEls = new Map(); // packet id -> element (kept in sync, never rebuilt)
-  let rowEls = [],
-    slotRecs = [],
-    slotMap = new Map();
   function type(s) {
     return s && s.type;
   }
@@ -245,78 +224,60 @@
     if (p.kind === "glue") return "GL";
     return D.weapons[p.kind === "weapon" ? p.product : p.kind]?.icon || "?";
   }
-  function machineHud(m, t) {
-    let show = S.showTimerText !== false;
+  // Plain data for a machine's readout: {label, progress, text, sub, noInput}
+  function hudInfo(m, t) {
+    const show = S.showTimerText !== false;
     if (genKind(t)) {
-      let kind = genKind(t),
+      const kind = genKind(t),
         period = kind === "iron" ? 3.2 : kind === "fuel" ? 1.75 : 4.2,
         rate = 1 + S.skills.generators * 0.22,
         stored = m.genStock || 0,
-        progress =
-          stored >= genBuffer() ? 1 : Math.min(1, (m.genClock || 0) / period),
-        label =
+        full = stored >= genBuffer();
+      return {
+        label:
           "STOCK " +
           stored +
           " · " +
           (kind === "iron" ? "Fe" : kind === "fuel" ? "Fuel" : "Glue"),
-        text =
-          stored >= genBuffer()
+        progress: full ? 1 : Math.min(1, (m.genClock || 0) / period),
+        text: show
+          ? full
             ? "FULL"
-            : Math.max(0, (period - (m.genClock || 0)) / rate).toFixed(1) + "s";
-      return (
-        '<span class="machine-hud"><b>' +
-        label +
-        '</b><span class="timer-bar"><i style="width:' +
-        progress * 100 +
-        '%"></i></span>' +
-        (show ? "<small>" + text + "</small>" : "") +
-        "</span>"
-      );
+            : Math.max(0, (period - (m.genClock || 0)) / rate).toFixed(1) + "s"
+          : "",
+        full,
+      };
     }
     if (D.productFor[t]) {
-      let product = D.productFor[t],
+      const product = D.productFor[t],
         req = inputsFor(product),
         inputs = m.inputs || {},
         ready = req.every(([k, n]) => (inputs[k] || 0) >= n),
-        label = req
-          .map(
-            ([k, n]) =>
-              (k === "iron"
-                ? "Fe"
-                : k === "fuel"
-                  ? "Fuel"
-                  : k === "glue"
-                    ? "Glue"
-                    : D.weapons[k]?.icon || k) +
-              " " +
-              (inputs[k] || 0) +
-              "/" +
-              n,
-          )
+        name = (k) =>
+          k === "iron"
+            ? "Fe"
+            : k === "fuel"
+              ? "Fuel"
+              : k === "glue"
+                ? "Glue"
+                : D.weapons[k]?.icon || k,
+        speed = 1 + S.skills.assembly * 0.3;
+      return {
+        label: req
+          .map(([k, n]) => name(k) + " " + (inputs[k] || 0) + "/" + n)
           .join(" · "),
-        progress = m.working ? Math.min(1, (m.work || 0) / 1.15) : 0,
-        text =
+        progress: m.working ? Math.min(1, (m.work || 0) / 1.15) : 0,
+        text:
           !ready && !m.working
             ? "NO INPUT"
-            : Math.max(
-                0,
-                m.working
-                  ? (1.15 - (m.work || 0)) / (1 + S.skills.assembly * 0.3)
-                  : 1.15 / (1 + S.skills.assembly * 0.3),
-              ).toFixed(1) + "s";
-      return (
-        '<span class="machine-hud"><b>' +
-        label +
-        '</b><span class="timer-bar ' +
-        (!ready && !m.working ? "no-input" : "") +
-        '"><i style="width:' +
-        progress * 100 +
-        '%"></i></span>' +
-        (show ? "<small>" + text + "</small>" : "") +
-        "<small>INPUT CAP " +
-        INPUT_CAP +
-        "</small></span>"
-      );
+            : show
+              ? Math.max(
+                  0,
+                  m.working ? (1.15 - (m.work || 0)) / speed : 1.15 / speed,
+                ).toFixed(1) + "s"
+              : "",
+        noInput: !ready && !m.working,
+      };
     }
     if (t === "seller") {
       m.sellStock = m.sellStock || {
@@ -325,264 +286,32 @@
         charge: 0,
         sticky: 0,
       };
-      let total = Object.values(m.sellStock).reduce((x, y) => x + y, 0),
-        period = sellerPeriod(),
-        progress = Math.min(1, (m.sellClock || 0) / period),
-        text = Math.max(0, period - (m.sellClock || 0)).toFixed(1) + "s";
-      return (
-        '<span class="machine-hud"><b>STOCK ' +
-        total +
-        ' · SELLER</b><span class="timer-bar"><i style="width:' +
-        progress * 100 +
-        '%"></i></span>' +
-        (show ? "<small>" + text + "</small>" : "") +
-        "</span>"
-      );
+      const total = Object.values(m.sellStock).reduce((x, y) => x + y, 0),
+        period = sellerPeriod();
+      return {
+        label: "STOCK " + total + " · SELLER",
+        progress: Math.min(1, (m.sellClock || 0) / period),
+        text: show
+          ? Math.max(0, period - (m.sellClock || 0)).toFixed(1) + "s"
+          : "",
+      };
     }
     if (t === "deposit") {
-      let counts = Object.entries(S.stock)
-        .map(
-          ([k, n]) =>
-            ({ grenade: "G", dynamite: "D", charge: "C", sticky: "ST" })[k] +
-            " " +
-            n,
-        )
-        .join(" · ");
-      return (
-        '<span class="machine-hud"><b>STOCK / TYPE</b><small>' +
-        counts +
-        "</small><small>CAP " +
-        cap() +
-        " EACH</small></span>"
-      );
+      return {
+        label: "STOCK / TYPE",
+        sub: Object.entries(S.stock)
+          .map(
+            ([k, n]) =>
+              ({ grenade: "G", dynamite: "D", charge: "C", sticky: "ST" })[k] +
+              " " +
+              n,
+          )
+          .join(" · "),
+        text: "CAP " + cap() + " EACH",
+      };
     }
-    return "";
+    return null;
   }
-  function renderUpgrades() {
-    let root = document.getElementById("upgradeBranches");
-    if (!root) return;
-    const html = ["Mining", "Factory", "Commerce"]
-      .map(
-        (branch) =>
-          '<section class="upgrade-branch"><h2>' +
-          branch +
-          "</h2>" +
-          UPGRADES.filter((u) => u.branch === branch)
-            .map((u) => {
-              let lv = S.skills[u.id] || 0,
-                cost = u.base + lv * 65,
-                locked = !!(
-                  u.requires && S.skills[u.requires.id] < u.requires.level
-                ),
-                status =
-                  lv >= 10
-                    ? "MAX"
-                    : locked
-                      ? "Requires " +
-                        UPGRADES.find((x) => x.id === u.requires.id).name +
-                        " Lv " +
-                        u.requires.level
-                      : "Next · ¢" + cost;
-              return (
-                '<button class="upgrade-node ' +
-                (locked ? "locked " : "") +
-                (lv ? "upgraded" : "") +
-                '" data-upgrade="' +
-                u.id +
-                '" title="' +
-                u.detail +
-                ' · Up to level 10" ' +
-                (locked || lv >= 10 || S.money < cost ? "disabled" : "") +
-                '><span class="upgrade-level">Lv ' +
-                lv +
-                " / 10</span><b>" +
-                u.name +
-                "</b><small>" +
-                u.detail +
-                "</small><em>" +
-                status +
-                "</em></button>"
-              );
-            })
-            .join("") +
-          "</section>",
-      )
-      .join("");
-    if (root._h !== html) {
-      root._h = html;
-      root.innerHTML = html;
-    }
-  }
-  F.render = () => {
-    document.getElementById("tower").innerHTML = S.floors
-      .map(
-        (f, fi) =>
-          '<div class="factory-row"><button class="floor-tag" title="Select floor ' +
-          (fi + 1) +
-          ' for placement" data-floor="' +
-          fi +
-          '">FLOOR ' +
-          (fi + 1) +
-          '</button><div class="factory-slots" data-row="' +
-          fi +
-          '"><div class="factory-rail"></div>' +
-          f.slots
-            .map((m, si) => {
-              let t = type(m),
-                p = t && D.parts[t],
-                working = !!(m && m.working);
-              return (
-                '<button class="factory-slot ' +
-                (!t ? "empty " : "") +
-                (working ? "working " : "") +
-                (S.selectedModule &&
-                S.selectedModule.fi === fi &&
-                S.selectedModule.si === si
-                  ? "selected"
-                  : "") +
-                '" title="' +
-                (p
-                  ? p.detail
-                  : "Empty bay. Select a factory part, then tap this bay to place it.") +
-                '" data-fi="' +
-                fi +
-                '" data-si="' +
-                si +
-                '">' +
-                (p ? machineHud(m, t) : "") +
-                '<span class="part-icon">' +
-                (p ? p.icon : "＋") +
-                "</span><small>" +
-                (p ? p.name : "Empty bay") +
-                "</small></button>"
-              );
-            })
-            .join("") +
-          '<button class="floor-extend" data-extend-floor="' +
-          fi +
-          '" title="Extend this floor · ' +
-          costText({ coal: 3, copper: 1 }) +
-          '" ' +
-          (!canPay({ coal: 3, copper: 1 }) ? "disabled" : "") +
-          ">＋</button>" +
-          (activeLine(f)
-            ? '<span class="conveyor-flow-label">MATERIALS →</span>'
-            : "") +
-          "</div></div>",
-      )
-      .join("");
-    // Fresh tower markup: forget cached elements, then rebuild the caches.
-    packetEls.clear();
-    rowEls = [...document.querySelectorAll(".factory-slots[data-row]")];
-    slotRecs = [];
-    slotMap = new Map();
-    for (const el of document.querySelectorAll(
-      ".factory-slot[data-fi][data-si]",
-    )) {
-      const hud = el.querySelector(".machine-hud"),
-        bar = hud && hud.querySelector(".timer-bar"),
-        rec = {
-          el,
-          fi: +el.dataset.fi,
-          si: +el.dataset.si,
-          hud,
-          bold: hud && hud.querySelector("b"),
-          bar,
-          fill: bar && bar.querySelector("i"),
-          smalls: hud ? hud.querySelectorAll("small") : [],
-        };
-      slotRecs.push(rec);
-      slotMap.set(rec.fi + "_" + rec.si, rec);
-    }
-    F.refresh();
-    F.drawPackets();
-  };
-  // Cheap panel refresh (parts list, status, upgrades). Only touches the
-  // screen that is showing, and only writes to the DOM when something changed.
-  F.refresh = () => {
-    if (screenOn("upgrades")) renderUpgrades();
-    if (!screenOn("factory")) return;
-    setHTML(
-      "parts",
-      Object.keys(D.parts)
-        .map(
-          (k) =>
-            '<button class="part-choice ' +
-            (S.selectedPart === k ? "route" : "") +
-            '" title="' +
-            D.parts[k].detail +
-            " · Cost: " +
-            costText(D.parts[k].cost) +
-            '" data-part="' +
-            k +
-            '"><b>' +
-            D.parts[k].icon +
-            " " +
-            D.parts[k].name +
-            "</b><small>Stored: " +
-            (S.partInventory[k] || 0) +
-            " · Craft: " +
-            costText(D.parts[k].cost) +
-            "</small></button>",
-        )
-        .join(""),
-    );
-    setHTML(
-      "partInventory",
-      Object.keys(D.parts)
-        .filter((k) => S.partInventory[k] > 0)
-        .map(
-          (k) =>
-            D.parts[k].icon +
-            " " +
-            D.parts[k].name +
-            " × " +
-            S.partInventory[k],
-        )
-        .join("<br>") || "No stored parts yet",
-    );
-    document
-      .getElementById("routeStock")
-      .classList.toggle("active", S.route === "stock");
-    document
-      .getElementById("routeSell")
-      .classList.toggle("active", S.route === "sell");
-    document.getElementById("routeStock").disabled = !countPart("deposit");
-    document.getElementById("routeSell").disabled = !countPart("seller");
-    let f = S.floors[S.selectedFloor] || S.floors[0];
-    document.getElementById("floorHelp").textContent =
-      "Floor " +
-      (S.selectedFloor + 1) +
-      " · " +
-      f.length +
-      " bays. " +
-      (S.selectedPart
-        ? "Selected: " + D.parts[S.selectedPart].name + ". Tap an empty bay."
-        : "Select a part, then tap an empty bay.");
-    document.getElementById("addFloor").textContent =
-      "Add floor · " + costText({ coal: 8, iron: 3 });
-    document.getElementById("addFloor").disabled = !canPay({
-      coal: 8,
-      iron: 3,
-    });
-    setHTML(
-      "factoryStatus",
-      "Packets in transit · " +
-        S.packets.length +
-        "<br>Weapon stock " +
-        stockCount() +
-        " · Limit " +
-        cap() +
-        " per type · Route: " +
-        (S.route === "stock" ? "deposit" : "sales"),
-    );
-    setText(
-      "toggleTimerText",
-      "Timer text: " + (S.showTimerText === false ? "Off" : "On"),
-    );
-    for (const b of document.querySelectorAll("[data-extend-floor]"))
-      b.disabled = !canPay({ coal: 3, copper: 1 });
-  };
   function skillCost(k) {
     let u = UPGRADES.find((x) => x.id === k);
     return u ? u.base + (S.skills[k] || 0) * 65 : Infinity;
@@ -603,28 +332,13 @@
     S.selectedModule = { fi, si };
     return "ok";
   };
-  // Small visual pops. Skipped while fast-forwarding / off screen.
+  // Visual hooks: the scene layer sets F.onFx / F.onFloat. Skipped when the
+  // factory is fast-forwarding off screen.
   function fx(fi, si, cls) {
-    if (F.fast) return;
-    const rec = slotMap.get(fi + "_" + si);
-    if (!rec || rec.el.classList.contains(cls)) return;
-    rec.el.classList.add(cls);
-    setTimeout(() => rec.el.classList.remove(cls), 380);
+    if (!F.fast && F.onFx) F.onFx(fi, si, cls);
   }
-  let floats = 0;
   function floatText(fi, si, text) {
-    if (F.fast || floats >= 10) return;
-    const rec = slotMap.get(fi + "_" + si);
-    if (!rec) return;
-    const el = document.createElement("span");
-    el.className = "float-text";
-    el.textContent = text;
-    floats++;
-    el.addEventListener("animationend", () => {
-      el.remove();
-      floats--;
-    });
-    rec.el.appendChild(el);
+    if (!F.fast && F.onFloat) F.onFloat(fi, si, text);
   }
   function newPacket(fi, kind, x, target, product, source) {
     S.packets.push({
@@ -881,254 +595,95 @@
     F.fast = false;
     D.markUI();
   };
-  // Keep one element per packet: create when new, move with transform-only
-  // updates, remove when gone. Nothing is rebuilt per frame.
-  F.drawPackets = () => {
-    if (!screenOn("factory")) return;
-    for (const p of S.packets) {
-      let el = packetEls.get(p.id);
-      if (!el) {
-        const row = rowEls[p.fi];
-        if (!row) continue;
-        el = document.createElement("span");
-        el.className =
-          "conveyor-packet " +
-          (p.kind === "weapon" ? "packet-weapon" : "packet-" + p.kind);
-        el.textContent = packetLabel(p);
-        el._x = null;
-        el._ph = null;
-        el._seen = 0;
-        row.appendChild(el);
-        packetEls.set(p.id, el);
-      }
-      el._seen = F.frameId;
-      const x = Math.round(p.x * 10) / 10;
-      if (el._x !== x) {
-        el._x = x;
-        el.style.translate = x + "px 0";
-      }
-      if (el._ph !== p.phase) {
-        el._ph = p.phase;
-        el.classList.toggle("packet-pull", p.phase === "pull");
-        el.classList.toggle("packet-burn", p.phase === "burn");
-      }
-    }
-    for (const [id, el] of packetEls)
-      if (el._seen !== F.frameId) {
-        el.remove();
-        packetEls.delete(id);
-      }
-    F.frameId++;
-  };
-  F.frameId = 1;
-  F.updateHUD = () => {
-    if (!screenOn("factory")) return;
-    for (const rec of slotRecs) {
-      const slot = rec.el,
-        m = S.floors[rec.fi] && S.floors[rec.fi].slots[rec.si],
-        t = type(m),
-        hud = rec.hud;
-      if (!m || !hud) continue;
-      let bold = rec.bold,
-        bar = rec.bar,
-        fill = rec.fill,
-        smalls = rec.smalls,
-        label = "",
-        texts = [],
-        progress = 0,
-        noInput = false;
-      if (genKind(t)) {
-        let kind = genKind(t),
-          period = kind === "iron" ? 3.2 : kind === "fuel" ? 1.75 : 4.2,
-          rate = 1 + S.skills.generators * 0.22,
-          stored = m.genStock || 0;
-        label =
-          "STOCK " +
-          stored +
-          " · " +
-          (kind === "iron" ? "Fe" : kind === "fuel" ? "Fuel" : "Glue");
-        progress =
-          stored >= genBuffer() ? 1 : Math.min(1, (m.genClock || 0) / period);
-        texts = [
-          stored >= genBuffer()
-            ? "FULL"
-            : Math.max(0, (period - (m.genClock || 0)) / rate).toFixed(1) + "s",
-        ];
-      } else if (D.productFor[t]) {
-        let product = D.productFor[t],
-          req = inputsFor(product),
-          inputs = m.inputs || {},
-          ready = req.every(([k, n]) => (inputs[k] || 0) >= n);
-        label = req
-          .map(
-            ([k, n]) =>
-              (k === "iron"
-                ? "Fe"
-                : k === "fuel"
-                  ? "Fuel"
-                  : k === "glue"
-                    ? "Glue"
-                    : D.weapons[k]?.icon || k) +
-              " " +
-              (inputs[k] || 0) +
-              "/" +
-              n,
-          )
-          .join(" · ");
-        progress = m.working ? Math.min(1, (m.work || 0) / 1.15) : 0;
-        noInput = !ready && !m.working;
-        texts =
-          S.showTimerText === false
-            ? ["INPUT CAP " + INPUT_CAP]
-            : [
-                noInput
-                  ? "NO INPUT"
-                  : Math.max(
-                      0,
-                      m.working
-                        ? (1.15 - (m.work || 0)) / (1 + S.skills.assembly * 0.3)
-                        : 1.15 / (1 + S.skills.assembly * 0.3),
-                    ).toFixed(1) + "s",
-                "INPUT CAP " + INPUT_CAP,
-              ];
-      } else if (t === "seller") {
-        m.sellStock = m.sellStock || {
-          grenade: 0,
-          dynamite: 0,
-          charge: 0,
-          sticky: 0,
-        };
-        let total = Object.values(m.sellStock).reduce((x, y) => x + y, 0),
-          period = sellerPeriod();
-        label = "STOCK " + total + " · SELLER";
-        progress = Math.min(1, (m.sellClock || 0) / period);
-        texts = [Math.max(0, period - (m.sellClock || 0)).toFixed(1) + "s"];
-      } else if (t === "deposit") {
-        label = "STOCK / TYPE";
-        texts = [
-          Object.entries(S.stock)
-            .map(
-              ([k, n]) =>
-                ({ grenade: "G", dynamite: "D", charge: "C", sticky: "ST" })[
-                  k
-                ] +
-                " " +
-                n,
-            )
-            .join(" · "),
-          "CAP " + cap() + " EACH",
-        ];
-      } else continue;
-      if (bold && bold.textContent !== label) bold.textContent = label;
-      if (fill) {
-        const w = (progress * 100).toFixed(1) + "%";
-        if (fill._w !== w) {
-          fill._w = w;
-          fill.style.width = w;
-        }
-      }
-      if (bar) bar.classList.toggle("no-input", noInput);
-      for (let i = 0; i < smalls.length; i++)
-        if (smalls[i].textContent !== (texts[i] || ""))
-          smalls[i].textContent = texts[i] || "";
-      slot.classList.toggle("working", !!m.working);
-      slot.classList.toggle(
-        "full",
-        !!genKind(t) && (m.genStock || 0) >= genBuffer(),
+  // ---- player actions (called by the canvas UI) --------------------------
+  const EXTEND_COST = { coal: 3, copper: 1 },
+    FLOOR_COST = { coal: 8, iron: 3 },
+    note = (t) => window.DeepworksUI.note(t);
+  F.UPGRADES = UPGRADES;
+  F.skillCost = skillCost;
+  F.upgradeInfo = (u) => {
+    const lv = S.skills[u.id] || 0,
+      cost = skillCost(u.id),
+      req = u.requires && UPGRADES.find((x) => x.id === u.requires.id),
+      locked = !!(
+        u.requires && (S.skills[u.requires.id] || 0) < u.requires.level
       );
+    return { lv, cost, locked, max: lv >= 10, afford: S.money >= cost, req };
+  };
+  F.buyUpgrade = (k) => {
+    const u = UPGRADES.find((x) => x.id === k);
+    if (!u) return false;
+    const i = F.upgradeInfo(u);
+    if (i.locked || i.max || !i.afford) return false;
+    S.money -= i.cost;
+    S.skills[k] = i.lv + 1;
+    return true;
+  };
+  F.hudInfo = hudInfo;
+  F.EXTEND_COST = EXTEND_COST;
+  F.FLOOR_COST = FLOOR_COST;
+  F.h = {
+    type,
+    genKind,
+    costText,
+    canPay,
+    cap,
+    stockCount,
+    activeLine,
+    packetLabel,
+    BAY,
+    PITCH,
+    SPEED,
+    INPUT_CAP,
+  };
+  F.selectPart = (k) => {
+    S.selectedPart = S.selectedPart === k ? null : k;
+  };
+  F.tapSlot = (fi, si) => {
+    S.selectedFloor = fi;
+    if (S.selectedPart) {
+      const r = F.place(fi, si);
+      if (r === "material")
+        note("Mine the listed ore to craft this factory part.");
+      else if (r === "occupied")
+        note("That bay is occupied. Unequip it to store the part.");
+      return r;
     }
+    S.selectedModule = { fi, si };
+    return "selected";
   };
-  F.init = () => {
-    document.getElementById("toggleTimerText").onclick = () => {
-      S.showTimerText = S.showTimerText === false;
-      F.render();
-    };
-    document.getElementById("parts").onclick = (e) => {
-      let b = e.target.closest("[data-part]");
-      if (b) {
-        S.selectedPart = b.dataset.part;
-        F.render();
-      }
-    };
-    document.getElementById("tower").onclick = (e) => {
-      let b = e.target.closest("[data-fi]");
-      if (b) {
-        let fi = +b.dataset.fi,
-          si = +b.dataset.si;
-        S.selectedFloor = fi;
-        if (S.selectedPart) {
-          let r = F.place(fi, si);
-          if (r === "material")
-            window.DeepworksUI.note(
-              "Mine the listed ore to craft this factory part.",
-            );
-          else if (r === "occupied")
-            window.DeepworksUI.note(
-              "That bay is occupied. Unequip it to store the part.",
-            );
-        } else S.selectedModule = { fi, si };
-      } else {
-        let ext = e.target.closest("[data-extend-floor]");
-        if (ext) {
-          let fi = +ext.dataset.extendFloor;
-          S.selectedFloor = fi;
-          if (pay({ coal: 3, copper: 1 })) {
-            S.floors[fi].slots.push(null);
-            S.floors[fi].length++;
-          } else
-            window.DeepworksUI.note(
-              "Mine 3 coal and 1 copper to extend this floor.",
-            );
-        } else {
-          let tag = e.target.closest("[data-floor]");
-          if (tag) S.selectedFloor = +tag.dataset.floor;
-        }
-      }
-      F.render();
-    };
-    document.getElementById("removePart").onclick = () => {
-      let z = S.selectedModule;
-      if (!z) return;
-      let m = S.floors[z.fi].slots[z.si],
-        t = type(m);
-      if (!t) return;
-      S.partInventory[t] = (S.partInventory[t] || 0) + 1;
-      S.floors[z.fi].slots[z.si] = null;
-      S.selectedModule = null;
-      F.render();
-    };
-    document.getElementById("addFloor").onclick = () => {
-      if (!pay({ coal: 8, iron: 3 })) return;
-      S.floors.push({ length: 6, slots: Array(6).fill(null) });
-      S.selectedFloor = S.floors.length - 1;
-      F.render();
-    };
-    document.getElementById("routeStock").onclick = () => {
-      if (countPart("deposit")) S.route = "stock";
-      F.render();
-    };
-    document.getElementById("routeSell").onclick = () => {
-      if (countPart("seller")) S.route = "sell";
-      F.render();
-    };
-    document.getElementById("upgradeBranches").onclick = (e) => {
-      let b = e.target.closest("[data-upgrade]");
-      if (!b) return;
-      let k = b.dataset.upgrade,
-        u = UPGRADES.find((x) => x.id === k),
-        cost = skillCost(k);
-      if (
-        !u ||
-        S.skills[k] >= 10 ||
-        S.money < cost ||
-        (u.requires && S.skills[u.requires.id] < u.requires.level)
-      )
-        return;
-      S.money -= cost;
-      S.skills[k]++;
-      F.render();
-      D.Mining.updateUI();
-    };
-    F.render();
+  F.tapExtend = (fi) => {
+    S.selectedFloor = fi;
+    if (pay(EXTEND_COST)) {
+      S.floors[fi].slots.push(null);
+      S.floors[fi].length++;
+      return true;
+    }
+    note("Mine 3 coal and 1 copper to extend this floor.");
+    return false;
   };
+  F.removeSelected = () => {
+    const z = S.selectedModule;
+    if (!z) return false;
+    const t = type(S.floors[z.fi] && S.floors[z.fi].slots[z.si]);
+    if (!t) return false;
+    S.partInventory[t] = (S.partInventory[t] || 0) + 1;
+    S.floors[z.fi].slots[z.si] = null;
+    S.selectedModule = null;
+    return true;
+  };
+  F.addFloor = () => {
+    if (!pay(FLOOR_COST)) return false;
+    S.floors.push({ length: 6, slots: Array(6).fill(null) });
+    S.selectedFloor = S.floors.length - 1;
+    return true;
+  };
+  F.setRoute = (r) => {
+    if (r === "stock" && countPart("deposit")) S.route = "stock";
+    if (r === "sell" && countPart("seller")) S.route = "sell";
+  };
+  F.toggleTimerText = () => {
+    S.showTimerText = S.showTimerText === false;
+  };
+  F.init = () => {};
 })();

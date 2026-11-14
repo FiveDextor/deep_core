@@ -165,6 +165,7 @@
     D.uiDirty = true;
   };
   D.save = () => {
+    if (D.noSave) return; // set while resetting so the reload doesn't re-save
     try {
       localStorage.setItem(
         KEY,
