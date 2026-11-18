@@ -43,6 +43,394 @@
       t = x / step - i;
     return ground[i] * (1 - t) + ground[i + 1] * t;
   }
+  // ---- destructible terrain -----------------------------------------------
+  // The ground is a 900x520 grid of 1px cells (0 air, 1 dirt, 2 rock, 3
+  // bedrock, 4 gravel). Blasts remove every cell inside their circle, sideways
+  // and overhead included, so tunnels, caves and overhangs all work. Dirt and
+  // rock stay put; only loose gravel moves (see stepGravel).
+  const GW = 900,
+    GH = 520,
+    FLOOR_Y = Math.floor(GH * 0.96), // bedrock starts here and can't be dug
+    ROCK_K = 0.62, // rock is only carved within 62% of a blast's radius
+    DIRT = 1,
+    ROCK = 2,
+    BEDROCK = 3,
+    GRAVEL = 4,
+    REPOSE = 3; // columns looked across for the slope: a drop of 2+ cells over 3 columns slides, so piles settle near 20 degrees
+  const grid = new Uint8Array(GW * GH),
+    colorTex = new Uint32Array(GW * GH),
+    groundX = new Float32Array(GW);
+  let gridReady = false,
+    rleCache = null,
+    dirty = null;
+  const inLoose = new Uint8Array(GW * GH), // gravel cells that may still move
+    readyAt = new Float32Array(GW * GH);
+  let loose = [],
+    gravClock = 0,
+    rowGravel = [];
+  const cellCv = document.createElement("canvas"),
+    cellCx = cellCv.getContext("2d");
+  cellCv.width = GW;
+  cellCv.height = GH;
+  const cellImg = cellCx.createImageData(GW, GH),
+    cell32 = new Uint32Array(cellImg.data.buffer);
+  function markDirty(x0, y0, x1, y1) {
+    x0 = Math.max(0, Math.floor(x0));
+    y0 = Math.max(0, Math.floor(y0));
+    x1 = Math.min(GW, Math.ceil(x1));
+    y1 = Math.min(GH, Math.ceil(y1));
+    if (!dirty) dirty = { x0, y0, x1, y1 };
+    else {
+      dirty.x0 = Math.min(dirty.x0, x0);
+      dirty.y0 = Math.min(dirty.y0, y0);
+      dirty.x1 = Math.max(dirty.x1, x1);
+      dirty.y1 = Math.max(dirty.y1, y1);
+    }
+  }
+  function solidAt(x, y) {
+    x = Math.floor(x);
+    y = Math.floor(y);
+    if (y >= GH) return true;
+    if (y < 0 || x < 0 || x >= GW) return false;
+    return grid[y * GW + x] !== 0;
+  }
+  const airAt = (x, y) =>
+    x < 0 || x >= GW
+      ? false
+      : y < 0
+        ? true
+        : y >= GH
+          ? false
+          : grid[y * GW + x] === 0;
+
+  function buildGrid() {
+    grid.fill(0);
+    for (let x = 0; x < GW; x++) {
+      const g = surface(x),
+        wave = 10 * Math.sin(x * 0.021) + 6 * Math.sin(x * 0.051 + 1.4);
+      for (let y = Math.max(0, Math.ceil(g)); y < GH; y++) {
+        const d = y - g;
+        let m = DIRT;
+        if (d > 46 + wave * 0.7 && d <= 100 + wave) m = GRAVEL;
+        if ((d > 100 + wave && d < 165 + wave) || d >= 250 + wave * 0.6)
+          m = ROCK;
+        if (y >= FLOOR_Y) m = BEDROCK;
+        grid[y * GW + x] = m;
+      }
+    }
+    gridReady = true;
+    rleCache = null;
+    loose = [];
+    inLoose.fill(0);
+    computeColors();
+    markDirty(0, 0, GW, GH);
+  }
+  // Per-cell colours (depth gradient, strata lines, speckle) are derived, not saved.
+  const hash = (x, y) => {
+    let h = Math.imul(x, 374761393) ^ Math.imul(y, 668265263);
+    h = Math.imul(h ^ (h >>> 13), 1274126177);
+    return (h ^ (h >>> 16)) >>> 0;
+  };
+  const hexRGB = (c) => [
+    parseInt(c.slice(1, 3), 16),
+    parseInt(c.slice(3, 5), 16),
+    parseInt(c.slice(5, 7), 16),
+  ];
+  const DIRT_STOPS = [
+      [0, "#795b43"],
+      [0.35, "#66503f"],
+      [0.58, "#555157"],
+      [0.8, "#414655"],
+      [1, "#292f40"],
+    ].map(([t, c]) => [t, hexRGB(c)]),
+    ROCK_STOPS = [
+      [0, "#767a82"],
+      [1, "#4c515d"],
+    ].map(([t, c]) => [t, hexRGB(c)]);
+  function ramp(stops, t) {
+    for (let i = 1; i < stops.length; i++)
+      if (t <= stops[i][0] || i === stops.length - 1) {
+        const [t0, a] = stops[i - 1],
+          [t1, b] = stops[i],
+          k = Math.max(0, Math.min(1, (t - t0) / (t1 - t0 || 1)));
+        return [
+          a[0] + (b[0] - a[0]) * k,
+          a[1] + (b[1] - a[1]) * k,
+          a[2] + (b[2] - a[2]) * k,
+        ];
+      }
+  }
+  const EDGE = {
+    1: [180, 154, 112],
+    2: [158, 164, 174],
+    3: [70, 80, 98],
+    4: [204, 192, 168],
+  };
+  const GRAVEL_STOPS = [
+    [0, "#938a7a"],
+    [1, "#6c675f"],
+  ].map(([t, c]) => [t, hexRGB(c)]);
+  // Gravel moves, so its colour is computed from where it is, not stored.
+  function gravelColor(x, y) {
+    const n = hash(x, y),
+      c = rowGravel[y],
+      k =
+        ((n & 15) - 8) * 1.7 +
+        ((n >>> 8) % 7 === 0 ? 34 : 0) -
+        ((n >>> 12) % 9 === 0 ? 30 : 0);
+    return pack(c[0] + k, c[1] + k, c[2] + k);
+  }
+  const pack = (r, g, b) =>
+    (0xff000000 |
+      (Math.max(0, Math.min(255, b)) << 16) |
+      (Math.max(0, Math.min(255, g)) << 8) |
+      Math.max(0, Math.min(255, r))) >>>
+    0;
+  function computeColors() {
+    const b0 = base(),
+      shift = Math.min(S.depth * 0.012, 0.2);
+    for (let x = 0; x < GW; x++) groundX[x] = surface(x);
+    const rowDirt = [],
+      rowRock = [];
+    rowGravel = [];
+    for (let y = 0; y < GH; y++) {
+      const t = Math.max(0, (y - b0) / (GH - b0)) + shift * 0.4;
+      rowGravel.push(ramp(GRAVEL_STOPS, Math.min(1, t)));
+      rowDirt.push(ramp(DIRT_STOPS, t));
+      rowRock.push(ramp(ROCK_STOPS, Math.min(1, t)));
+    }
+    for (let y = 0; y < GH; y++)
+      for (let x = 0; x < GW; x++) {
+        const i = y * GW + x,
+          m = grid[i];
+        if (!m) continue;
+        const n = hash(x, y),
+          v = (n & 15) - 8;
+        let c, k;
+        if (m === ROCK) {
+          c = rowRock[y];
+          k =
+            v * 0.9 +
+            ((n >>> 8) % 23 === 0 ? 26 : 0) -
+            ((n >>> 14) % 61 === 0 ? 22 : 0);
+        } else if (m === BEDROCK) {
+          c = [38, 44, 58];
+          k = v * 0.5;
+        } else {
+          c = rowDirt[y];
+          const depth = y - groundX[x];
+          k =
+            v * 0.7 +
+            ((n >>> 8) % 29 === 0 ? 14 : 0) -
+            (depth % 80 < 2 && depth > 8 ? 10 : 0);
+        }
+        colorTex[i] = pack(c[0] + k, c[1] + k, c[2] + k);
+      }
+  }
+  // Refresh the pixels of every cell touched since the last call.
+  function flushCells() {
+    if (!dirty) return;
+    const { x0, y0, x1, y1 } = dirty;
+    for (let y = y0; y < y1; y++)
+      for (let x = x0; x < x1; x++) {
+        const i = y * GW + x,
+          m = grid[i];
+        if (!m) {
+          cell32[i] = 0;
+          continue;
+        }
+        const edge =
+          airAt(x - 1, y) ||
+          airAt(x + 1, y) ||
+          airAt(x, y - 1) ||
+          airAt(x, y + 1) ||
+          airAt(x, y - 2) ||
+          airAt(x - 2, y) ||
+          airAt(x + 2, y) ||
+          airAt(x, y + 2);
+        if (edge) {
+          const e = EDGE[m];
+          cell32[i] = pack(e[0], e[1], e[2]);
+        } else cell32[i] = m === GRAVEL ? gravelColor(x, y) : colorTex[i];
+      }
+    cellCx.putImageData(cellImg, 0, 0, x0, y0, x1 - x0, y1 - y0);
+    dirty = null;
+  }
+  // Remove cells inside a circle. Dirt goes at full radius, rock at ROCK_K of it,
+  // bedrock never. Returns how many cells were removed.
+  function carve(cx, cy, r) {
+    const x0 = Math.max(0, Math.floor(cx - r)),
+      x1 = Math.min(GW - 1, Math.ceil(cx + r)),
+      y0 = Math.max(0, Math.floor(cy - r)),
+      y1 = Math.min(FLOOR_Y - 1, Math.ceil(cy + r)),
+      rr = r * r,
+      rk = rr * ROCK_K * ROCK_K;
+    let removed = 0;
+    for (let y = y0; y <= y1; y++)
+      for (let x = x0; x <= x1; x++) {
+        const i = y * GW + x,
+          m = grid[i];
+        if (!m || m === BEDROCK) continue;
+        const dx = x + 0.5 - cx,
+          dy = y + 0.5 - cy;
+        if (dx * dx + dy * dy <= (m === ROCK ? rk : rr)) {
+          grid[i] = 0;
+          removed++;
+        }
+      }
+    if (removed) {
+      markDirty(x0 - 3, y0 - 3, x1 + 4, y1 + 4);
+      rleCache = null;
+      // gravel that lost its support (above or beside the hole) starts to slide
+      wakeBox(x0 - 6, y0 - 90, x1 + 6, y1 + 2, 0.12, 0.5);
+    }
+    return removed;
+  }
+  // ---- loose gravel ----------------------------------------------------------
+  // Gravel holds for a moment after losing support, then falls straight down
+  // if the cell below is free, or slides down-sideways when the slope below is
+  // gentler than about 20 degrees would hold. Settled piles keep that angle.
+  function wake(i, delay, spread) {
+    if (grid[i] !== GRAVEL || inLoose[i]) return;
+    inLoose[i] = 1;
+    readyAt[i] = gravClock + delay + Math.random() * spread;
+    loose.push(i);
+  }
+  function wakeBox(x0, y0, x1, y1, delay, spread) {
+    x0 = Math.max(0, x0);
+    y0 = Math.max(0, y0);
+    x1 = Math.min(GW - 1, x1);
+    y1 = Math.min(GH - 2, y1);
+    for (let y = y0; y <= y1; y++)
+      for (let x = x0; x <= x1; x++) wake(y * GW + x, delay, spread);
+  }
+  function wakeUnstable() {
+    for (let i = 0; i < GW * (GH - 1); i++)
+      if (grid[i] === GRAVEL && grid[i + GW] === 0) wake(i, 0.1, 0.4);
+  }
+  // Where would the gravel cell at index i go? -1 if it stays.
+  function gravelMove(i) {
+    const x = i % GW,
+      y = (i / GW) | 0;
+    if (y + 1 >= GH) return -1;
+    if (grid[i + GW] === 0) {
+      // free fall, up to two cells per step so a slide has some speed
+      return y + 2 < GH && grid[i + 2 * GW] === 0 ? i + 2 * GW : i + GW;
+    }
+    // Supported from below. It still hops sideways onto a free neighbour when
+    // the surface 3 columns away is 2+ cells lower than this one (steeper than
+    // ~20 degrees), so settled piles keep a slope of about 20 degrees.
+    const d = Math.random() < 0.5 ? -1 : 1;
+    for (const dir of [d, -d]) {
+      const nx = x + dir * REPOSE;
+      if (x + dir < 0 || x + dir >= GW || grid[i + dir] !== 0) continue;
+      if (nx < 0 || nx >= GW || grid[i + GW + dir * REPOSE] !== 0) continue;
+      return i + dir;
+    }
+    return -1;
+  }
+  function stepGravel(dt) {
+    if (!loose.length) return;
+    gravClock += dt;
+    let budget = 16000,
+      next = [],
+      bx0 = GW,
+      by0 = GH,
+      bx1 = 0,
+      by1 = 0;
+    const touch = (x, y) => {
+      if (x < bx0) bx0 = x;
+      if (x > bx1) bx1 = x;
+      if (y < by0) by0 = y;
+      if (y > by1) by1 = y;
+    };
+    for (let n = 0; n < loose.length; n++) {
+      const i = loose[n];
+      if (budget-- <= 0) {
+        next.push(i);
+        continue;
+      }
+      if (grid[i] !== GRAVEL) {
+        inLoose[i] = 0;
+        continue;
+      }
+      if (gravClock < readyAt[i]) {
+        next.push(i);
+        continue;
+      }
+      // a cell can hop several times per frame, so slides finish in seconds
+      let cur = i,
+        moved = false;
+      for (let hop = 0; hop < 4; hop++) {
+        const j = gravelMove(cur);
+        if (j < 0) break;
+        grid[j] = GRAVEL;
+        grid[cur] = 0;
+        inLoose[cur] = 0;
+        const cx = cur % GW,
+          cy = (cur / GW) | 0,
+          jx = j % GW,
+          jy = (j / GW) | 0;
+        touch(Math.min(cx, jx), Math.min(cy, jy));
+        touch(Math.max(cx, jx), Math.max(cy, jy));
+        // whatever rested on or beside the cell it left may now slide too
+        // the cell above, the sides, and cells 3 columns away (their slope test reads this spot)
+        for (const w of [
+          cur - GW,
+          cur - GW - 1,
+          cur - GW + 1,
+          cur - 1,
+          cur + 1,
+          cur - GW - REPOSE,
+          cur - GW + REPOSE,
+          cur - REPOSE,
+          cur + REPOSE,
+        ])
+          if (w >= 0 && w < GW * GH) wake(w, 0, 0.03);
+        cur = j;
+        moved = true;
+      }
+      if (moved) {
+        inLoose[cur] = 1;
+        readyAt[cur] = gravClock;
+        next.push(cur);
+      } else inLoose[i] = 0; // supported: it stays
+    }
+    loose = next; // (cells woken during the loop were already visited above)
+    if (bx1 >= bx0) {
+      markDirty(bx0 - 3, by0 - 3, bx1 + 4, by1 + 4);
+      rleCache = null;
+    }
+  }
+  // Saved as run-length pairs [material, count, ...].
+  function encodeGrid() {
+    if (rleCache) return rleCache;
+    const out = [];
+    let prev = grid[0],
+      run = 0;
+    for (let i = 0; i < grid.length; i++) {
+      if (grid[i] === prev) run++;
+      else {
+        out.push(prev, run);
+        prev = grid[i];
+        run = 1;
+      }
+    }
+    out.push(prev, run);
+    return (rleCache = out);
+  }
+  function decodeGrid(rle) {
+    let total = 0;
+    for (let k = 1; k < rle.length; k += 2) total += rle[k];
+    if (total !== GW * GH) return false;
+    let i = 0;
+    for (let k = 0; k < rle.length; k += 2) {
+      grid.fill(rle[k], i, i + rle[k + 1]);
+      i += rle[k + 1];
+    }
+    rleCache = rle;
+    return true;
+  }
   function chooseOre() {
     let d = S.depth,
       w = [Math.max(24, 62 - d * 3), 25, 11 + d * 2, 2 + d],
@@ -113,6 +501,7 @@
     h0 = H();
     bombs = [];
     terrainDirty = true;
+    buildGrid();
     makeCaches();
   }
   function resize() {
@@ -158,6 +547,7 @@
     dpr = d;
     terrainDirty = true;
     if (!ground.length) makeWorld();
+    else if (!gridReady) buildGrid(); // older save: build the grid from its surface
   }
   function countOre() {
     return Object.values(S.ore).reduce((a, b) => a + b, 0);
@@ -166,26 +556,10 @@
     return (420 + S.depth * 160) * 5;
   }
   function updateUI() {} // panels are drawn live by the scene
-  // Craters are true circles centred on the explosion. The ground is a
-  // height map, so a column is lowered to the bottom of the circle; columns
-  // whose surface sits above the circle (it would be a cave) are left alone.
+  // A blast carves a true circle out of the terrain, in every direction.
   function blast(b, py) {
-    const rad = b.r / (1 + S.depth * 0.14),
-      floor = H() * 0.96;
-    let dug = 0;
-    for (let i = 0; i < ground.length; i++) {
-      const dx = i * step - b.px;
-      if (Math.abs(dx) >= rad) continue;
-      const half = Math.sqrt(rad * rad - dx * dx),
-        g = ground[i];
-      if (g < py - half) continue;
-      const bottom = Math.min(floor, py + half);
-      if (bottom > g) {
-        ground[i] = bottom;
-        dug += ((bottom - g) * step) / 12;
-      }
-    }
-    S.digScore += dug;
+    const rad = b.r / (1 + S.depth * 0.14);
+    S.digScore += carve(b.px, py, rad) / 12;
     terrainDirty = true;
     for (const o of caches) {
       let effective = rad / o.hardness,
@@ -300,18 +674,16 @@
     return sp;
   }
   function paintVeins() {
-    // only the part of an ore that sticks out above the ground is visible
-    const sky = new Path2D();
-    sky.moveTo(0, 0);
-    sky.lineTo(W(), 0);
-    for (let i = 0; i < ground.length; i++) sky.lineTo(i * step, ground[i]);
-    sky.lineTo(0, ground[0]);
-    sky.closePath();
+    // Ore sits under the terrain layer: it shows only where dirt was carved away.
+    const below = new Path2D();
+    below.moveTo(0, H());
+    for (let i = 0; i < ground.length; i++) below.lineTo(i * step, ground[i]);
+    below.lineTo(W(), H());
+    below.closePath();
     tx.save();
-    tx.clip(sky);
+    tx.clip(below);
     for (const o of caches) {
-      if (!o.cells.length || !o.cells.some((q) => q[1] <= surface(q[0])))
-        continue;
+      if (!o.cells.length) continue;
       const sp = oreSprite(o);
       tx.drawImage(sp.out, sp.bx, sp.by, sp.bw, sp.bh);
     }
@@ -320,44 +692,16 @@
   function renderTerrain() {
     const w = W(),
       h = H();
+    flushCells();
     tx.clearRect(0, 0, w, h);
     let sky = tx.createLinearGradient(0, 0, 0, base());
     sky.addColorStop(0, "#45666a");
     sky.addColorStop(1, "#283b40");
     tx.fillStyle = sky;
     tx.fillRect(0, 0, w, h);
-    let g = tx.createLinearGradient(0, base(), 0, h),
-      q = Math.min(S.depth * 0.012, 0.2);
-    g.addColorStop(0, "#795b43");
-    g.addColorStop(Math.max(0.08, 0.35 - q), "#66503f");
-    g.addColorStop(Math.max(0.2, 0.58 - q), "#555157");
-    g.addColorStop(Math.max(0.38, 0.8 - q), "#414655");
-    g.addColorStop(1, "#292f40");
-    tx.beginPath();
-    tx.moveTo(0, h);
-    ground.forEach((y, i) => tx.lineTo(i * step, y));
-    tx.lineTo(w, h);
-    tx.closePath();
-    tx.fillStyle = g;
-    tx.fill();
-    for (let k = 1; k < 4; k++) {
-      tx.beginPath();
-      ground.forEach((y, i) => {
-        let xx = i * step,
-          yy = y + ((h - y) * k) / 4;
-        i ? tx.lineTo(xx, yy) : tx.moveTo(xx, yy);
-      });
-      tx.strokeStyle = "rgba(220,210,190,.07)";
-      tx.lineWidth = 2;
-      tx.stroke();
-    }
     paintVeins();
-    tx.beginPath();
-    tx.moveTo(0, ground[0]);
-    ground.forEach((y, i) => tx.lineTo(i * step, y));
-    tx.strokeStyle = "#b49a70";
-    tx.lineWidth = 4;
-    tx.stroke();
+    tx.imageSmoothingEnabled = dpr > 1.05;
+    tx.drawImage(cellCv, 0, 0, w, h);
   }
   M.drawWorld = (ctx) => {
     let w = W(),
@@ -503,19 +847,29 @@
           : S.selectedWeapon === "sticky"
             ? S.skills.stickyRadius * 0.08
             : 0;
+    const fuseTime = S.selectedWeapon === "dynamite" ? 5 : 3;
+    px = Math.max(8, Math.min(W() - 8, px));
+    py = Math.max(8, Math.min(H() - 8, py));
+    while (py > 8 && solidAt(px, py)) py -= 2; // aimed into the ground: start from its surface
     bombs.push({
-      px: Math.max(8, Math.min(W() - 8, px)),
-      py: Math.max(8, Math.min(H() - 8, py)),
+      px,
+      py,
       vx,
       vy,
       angle: 0,
       fuseStarted: false,
-      fuse: 3,
+      fuseTime,
+      fuse: fuseTime,
       r: w.radius * (1 + S.skills.blast * 0.1 + specificRadius),
       weapon: S.selectedWeapon,
     });
     window.DeepworksUI.note(
-      w.name + " thrown. It explodes 3 seconds after first impact.",
+      w.name +
+        (S.selectedWeapon === "sticky"
+          ? " thrown. It sticks wherever it lands, then explodes after 3 seconds."
+          : " thrown. It explodes " +
+            fuseTime +
+            " seconds after first impact."),
     );
     scheduleFrame();
     updateUI();
@@ -530,30 +884,28 @@
   // the surface normal instead of snapping it on top of the ground.
   function collideGround(b) {
     let hit = null;
-    for (let it = 0; it < 4; it++) {
-      let best = 0,
-        bn = null;
-      for (let k = 0; k < 12; k++) {
-        const a = (k * Math.PI) / 6,
+    for (let it = 0; it < 30; it++) {
+      let sx = 0,
+        sy = 0,
+        n = 0;
+      for (let k = 0; k < 16; k++) {
+        const a = (k * Math.PI) / 8,
           x = b.px + Math.cos(a) * BOMB_R,
           y = b.py + Math.sin(a) * BOMB_R;
-        if (x < 0 || x > W()) continue;
-        const gy = surface(x);
-        if (y <= gy) continue;
-        const x0 = Math.max(0, x - 2),
-          x1 = Math.min(W(), x + 2),
-          m = (surface(x1) - surface(x0)) / Math.max(1, x1 - x0),
-          len = Math.sqrt(1 + m * m),
-          d = (y - gy) / len;
-        if (d > best) {
-          best = d;
-          bn = { nx: m / len, ny: -1 / len };
+        if (solidAt(x, y)) {
+          sx += b.px - x;
+          sy += b.py - y;
+          n++;
         }
       }
-      if (!bn) break;
-      b.px += bn.nx * (best + 0.05);
-      b.py += bn.ny * (best + 0.05);
-      hit = bn;
+      if (!n) break;
+      const len = Math.hypot(sx, sy),
+        nx = len > 0.001 ? sx / len : 0,
+        ny = len > 0.001 ? sy / len : -1,
+        push = 0.35 + 0.12 * n;
+      b.px += nx * push;
+      b.py += ny * push;
+      hit = { nx, ny };
     }
     return hit;
   }
@@ -571,7 +923,7 @@
         continue;
       for (const q of o.cells) {
         const dx = b.px - q[0];
-        if (dx > BOMB_R || dx < -BOMB_R || q[1] > surface(q[0])) continue;
+        if (dx > BOMB_R || dx < -BOMB_R || solidAt(q[0], q[1])) continue;
         const dy = b.py - q[1],
           d2 = dx * dx + dy * dy;
         if (d2 >= BOMB_R * BOMB_R) continue;
@@ -591,6 +943,7 @@
     return { nx, ny };
   }
   function stepBomb(b, ds) {
+    if (b.stuck) return; // a stuck sticky grenade never moves again
     b.vy += 0.34 * ds;
     b.px += b.vx * ds;
     b.py += b.vy * ds;
@@ -608,11 +961,12 @@
     if (!n) return;
     if (!b.fuseStarted) {
       b.fuseStarted = true;
-      b.fuse = 3;
+      b.fuse = b.fuseTime || 3;
     }
     if (b.weapon === "sticky") {
       b.vx = 0;
       b.vy = 0;
+      b.stuck = true;
       return;
     }
     const vn = b.vx * n.nx + b.vy * n.ny;
@@ -657,6 +1011,7 @@
   // Advance bombs / effects by `frames` 60Hz-frames (real time * 60).
   M.update = (frames) => {
     const scale = Math.min(3, frames);
+    stepGravel(scale / 60);
     let animate = false;
     for (let i = rings.length - 1; i >= 0; i--) {
       rings[i].r += (rings[i].max || 64) * 0.1 * scale;
@@ -697,15 +1052,34 @@
       if (p.t <= 0) dust.splice(i, 1);
     }
   };
+  function unpackOre(o) {
+    if (!o.cells10) return o; // older save: cells already stored as pairs
+    const { cells10, ...rest } = o,
+      cells = [];
+    for (let i = 0; i + 1 < cells10.length; i += 2)
+      cells.push([cells10[i] / 10, cells10[i + 1] / 10]);
+    return { ...rest, cells };
+  }
   M.init = () => {
     let z = D.mineSave;
     if (z && Array.isArray(z.ground) && Array.isArray(z.caches)) {
       ground = z.ground;
-      caches = z.caches.filter(
-        (o) => o.cells && o.cells.length >= MIN_ORE_CELLS,
-      );
+      caches = z.caches
+        .map(unpackOre)
+        .filter((o) => o.cells && o.cells.length >= MIN_ORE_CELLS);
       w0 = z.w || 0;
       h0 = z.h || 0;
+      if (
+        Array.isArray(z.grid) &&
+        w0 === GW &&
+        h0 === GH &&
+        decodeGrid(z.grid)
+      ) {
+        gridReady = true;
+        computeColors();
+        markDirty(0, 0, GW, GH);
+        wakeUnstable(); // gravel that was mid-slide when the game was saved
+      }
     }
     resize();
     D.Engine.onResize.push(resize);
@@ -763,5 +1137,21 @@
   M.H = H;
   M.updateUI = updateUI;
   M.resize = resize;
-  M.saveData = () => ({ ground, caches, w: w0, h: h0 });
+  // Ore cells are saved as a flat list of tenths of a pixel to keep the save small.
+  const packOre = (o) => {
+    const { cells, ...rest } = o,
+      flat = new Array(cells.length * 2);
+    for (let i = 0; i < cells.length; i++) {
+      flat[i * 2] = Math.round(cells[i][0] * 10);
+      flat[i * 2 + 1] = Math.round(cells[i][1] * 10);
+    }
+    return { ...rest, cells10: flat };
+  };
+  M.saveData = () => ({
+    ground,
+    caches: caches.map(packOre),
+    grid: encodeGrid(),
+    w: w0,
+    h: h0,
+  });
 })();

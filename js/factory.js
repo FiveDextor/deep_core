@@ -573,6 +573,7 @@
             S.money += earnings;
             D.markUI();
             floatText(fi, si, "+¢" + Math.round(earnings));
+            if (!F.fast && F.onSale) F.onSale(fi, si, earnings);
             fx(fi, si, "receive");
           }
         }

@@ -219,7 +219,7 @@
     );
     E.text(
       g,
-      "Bombs explode 3 seconds after their first impact. Deeper layers take stronger blasts.",
+      "Bombs explode 3 s after first impact (dynamite 5 s). Sticky grenades stay where they land. Rock is harder to dig than dirt, and loose gravel slides when undermined.",
       WX,
       634,
       { size: 13, weight: 500, color: "#7f9a93", maxW: 900 },
@@ -279,6 +279,38 @@
     slotAnim.set(k, a);
   };
   F.onFloat = (fi, si, text) => fxFor(fi).float(slotCenter(si), 36, text, GOLD);
+  // A truck leaves the seller's bay with the goods every time something sells.
+  const trucks = [];
+  F.onSale = (fi, si) => {
+    if (trucks.length < 8)
+      trucks.push({ fi, x: slotCenter(si), t: 0, puff: 0 });
+  };
+  function updateTrucks(dt) {
+    for (let i = trucks.length - 1; i >= 0; i--) {
+      const k = trucks[i],
+        f = S.floors[k.fi];
+      k.t += dt;
+      k.x += (50 + 330 * Math.min(1, k.t / 1.2)) * dt; // pulls away, then speeds up
+      k.puff += dt;
+      if (k.puff > 0.09 && !E.reduced) {
+        k.puff = 0;
+        fxFor(k.fi).puff(k.x - 16, 122);
+      }
+      if (!f || k.x > f.slots.length * H.PITCH + 90) trucks.splice(i, 1);
+    }
+  }
+  function drawTruck(g, k) {
+    const f = S.floors[k.fi],
+      end = (f ? f.slots.length : 6) * H.PITCH + 90,
+      bob = Math.sin(k.t * 28) * 0.8,
+      a = clamp(Math.min(k.t / 0.15, (end - k.x) / 60), 0, 1);
+    g.save();
+    g.globalAlpha = a;
+    g.translate(k.x, 107 + bob);
+    g.scale(-1, 1); // the emoji faces left; the truck drives right
+    E.text(g, "🚚", 0, 0, { size: 28, weight: 400, align: "center" });
+    g.restore();
+  }
 
   function drawPacket(g, p, y) {
     if (!born.has(p.id)) born.set(p.id, E.time);
@@ -531,6 +563,7 @@
     });
     // packets ride the rail
     for (const p of S.packets) if (p.fi === fi) drawPacket(g, p, 120);
+    for (const k of trucks) if (k.fi === fi) drawTruck(g, k);
     // extend button
     const ext = !H.canPay(F.EXTEND_COST);
     if (
@@ -885,7 +918,10 @@
       a.receive = Math.max(0, a.receive - dt);
       if (!a.emit && !a.receive) slotAnim.delete(k);
     }
-    if (Scenes.current === "factory") rowFx.forEach((f) => f && f.update(dt));
+    if (Scenes.current === "factory") {
+      updateTrucks(dt);
+      rowFx.forEach((f) => f && f.update(dt));
+    } else trucks.length = 0;
     upFx.update(dt);
     if (born.size > S.packets.length + 80) {
       const live = new Set(S.packets.map((p) => p.id));
