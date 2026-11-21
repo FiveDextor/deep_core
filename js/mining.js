@@ -82,6 +82,7 @@
   const cellImg = cellCx.createImageData(GW, GH),
     cell32 = new Uint32Array(cellImg.data.buffer);
   function markDirty(x0, y0, x1, y1) {
+    terrainDirty = true; // any changed cell means the picture must be redrawn this frame
     x0 = Math.max(0, Math.floor(x0));
     y0 = Math.max(0, Math.floor(y0));
     x1 = Math.min(GW, Math.ceil(x1));
