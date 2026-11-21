@@ -118,6 +118,7 @@
     money: 0,
     depth: 0,
     digScore: 0,
+    mineType: "dirt", // the kind of ground this level is made of: dirt, gravel or rock
     banked: 0,
     ore: { coal: 0, copper: 0, iron: 0, gold: 0 },
     resources: { iron: 0, fuel: 0 },

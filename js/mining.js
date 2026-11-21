@@ -46,8 +46,10 @@
   // ---- destructible terrain -----------------------------------------------
   // The ground is a 900x520 grid of 1px cells (0 air, 1 dirt, 2 rock, 3
   // bedrock, 4 gravel). Blasts remove every cell inside their circle, sideways
-  // and overhead included, so tunnels, caves and overhangs all work. Dirt and
-  // rock stay put; only loose gravel moves (see stepGravel).
+  // and overhead included, so tunnels, caves and overhangs all work. Each
+  // level is ONE kind of ground (S.mineType). Dirt and gravel are loose and slide
+  // when undermined (dirt holds slopes up to 45 degrees, gravel only ~20); rock
+  // stays put but is harder to dig.
   const GW = 900,
     GH = 520,
     FLOOR_Y = Math.floor(GH * 0.96), // bedrock starts here and can't be dug
@@ -56,7 +58,11 @@
     ROCK = 2,
     BEDROCK = 3,
     GRAVEL = 4,
-    REPOSE = 3; // columns looked across for the slope: a drop of 2+ cells over 3 columns slides, so piles settle near 20 degrees
+    REPOSE = 3, // gravel: a drop of 2+ cells over 3 columns slides, so piles settle near 20 degrees
+    REPOSE_DIRT = 1; // dirt: a drop of 2+ cells over 1 column slides, so piles settle at 45 degrees
+  const GROUND = { dirt: DIRT, gravel: GRAVEL, rock: ROCK };
+  const GROUND_NAME = { dirt: "Dirt", gravel: "Gravel", rock: "Rock" };
+  const isLoose = (m) => m === DIRT || m === GRAVEL;
   const grid = new Uint8Array(GW * GH),
     colorTex = new Uint32Array(GW * GH),
     groundX = new Float32Array(GW);
@@ -67,7 +73,8 @@
     readyAt = new Float32Array(GW * GH);
   let loose = [],
     gravClock = 0,
-    rowGravel = [];
+    rowGravel = [],
+    rowDirt = [];
   const cellCv = document.createElement("canvas"),
     cellCx = cellCv.getContext("2d");
   cellCv.width = GW;
@@ -106,14 +113,9 @@
   function buildGrid() {
     grid.fill(0);
     for (let x = 0; x < GW; x++) {
-      const g = surface(x),
-        wave = 10 * Math.sin(x * 0.021) + 6 * Math.sin(x * 0.051 + 1.4);
+      const g = surface(x);
       for (let y = Math.max(0, Math.ceil(g)); y < GH; y++) {
-        const d = y - g;
-        let m = DIRT;
-        if (d > 46 + wave * 0.7 && d <= 100 + wave) m = GRAVEL;
-        if ((d > 100 + wave && d < 165 + wave) || d >= 250 + wave * 0.6)
-          m = ROCK;
+        let m = GROUND[S.mineType] || DIRT; // the whole level is one kind of ground
         if (y >= FLOOR_Y) m = BEDROCK;
         grid[y * GW + x] = m;
       }
@@ -170,6 +172,17 @@
     [0, "#938a7a"],
     [1, "#6c675f"],
   ].map(([t, c]) => [t, hexRGB(c)]);
+  // Dirt and gravel move, so their colour is computed from where they are, not stored.
+  function dirtColor(x, y) {
+    const n = hash(x, y),
+      c = rowDirt[y],
+      depth = y - groundX[x],
+      k =
+        ((n & 15) - 8) * 0.7 +
+        ((n >>> 8) % 29 === 0 ? 14 : 0) -
+        (depth % 80 < 2 && depth > 8 ? 10 : 0);
+    return pack(c[0] + k, c[1] + k, c[2] + k);
+  }
   // Gravel moves, so its colour is computed from where it is, not stored.
   function gravelColor(x, y) {
     const n = hash(x, y),
@@ -190,9 +203,9 @@
     const b0 = base(),
       shift = Math.min(S.depth * 0.012, 0.2);
     for (let x = 0; x < GW; x++) groundX[x] = surface(x);
-    const rowDirt = [],
-      rowRock = [];
+    const rowRock = [];
     rowGravel = [];
+    rowDirt = [];
     for (let y = 0; y < GH; y++) {
       const t = Math.max(0, (y - b0) / (GH - b0)) + shift * 0.4;
       rowGravel.push(ramp(GRAVEL_STOPS, Math.min(1, t)));
@@ -251,7 +264,13 @@
         if (edge) {
           const e = EDGE[m];
           cell32[i] = pack(e[0], e[1], e[2]);
-        } else cell32[i] = m === GRAVEL ? gravelColor(x, y) : colorTex[i];
+        } else
+          cell32[i] =
+            m === GRAVEL
+              ? gravelColor(x, y)
+              : m === DIRT
+                ? dirtColor(x, y)
+                : colorTex[i];
       }
     cellCx.putImageData(cellImg, 0, 0, x0, y0, x1 - x0, y1 - y0);
     dirty = null;
@@ -275,23 +294,23 @@
           dy = y + 0.5 - cy;
         if (dx * dx + dy * dy <= (m === ROCK ? rk : rr)) {
           grid[i] = 0;
-          removed++;
+          removed += m === ROCK ? 1 / (ROCK_K * ROCK_K) : 1; // rock is smaller per blast, so it counts for more
         }
       }
     if (removed) {
       markDirty(x0 - 3, y0 - 3, x1 + 4, y1 + 4);
       rleCache = null;
-      // gravel that lost its support (above or beside the hole) starts to slide
+      // loose ground that lost its support (above or beside the hole) starts to slide
       wakeBox(x0 - 6, y0 - 90, x1 + 6, y1 + 2, 0.12, 0.5);
     }
     return removed;
   }
-  // ---- loose gravel ----------------------------------------------------------
-  // Gravel holds for a moment after losing support, then falls straight down
-  // if the cell below is free, or slides down-sideways when the slope below is
-  // gentler than about 20 degrees would hold. Settled piles keep that angle.
+  // ---- loose ground (dirt and gravel) -----------------------------------------
+  // Loose cells hold for a moment after losing support, then fall straight down
+  // if the cell below is free, or slide sideways when the slope is steeper than
+  // the material holds (gravel ~20 degrees, dirt 45). Settled piles keep that angle.
   function wake(i, delay, spread) {
-    if (grid[i] !== GRAVEL || inLoose[i]) return;
+    if (!isLoose(grid[i]) || inLoose[i]) return;
     inLoose[i] = 1;
     readyAt[i] = gravClock + delay + Math.random() * spread;
     loose.push(i);
@@ -306,7 +325,7 @@
   }
   function wakeUnstable() {
     for (let i = 0; i < GW * (GH - 1); i++)
-      if (grid[i] === GRAVEL && grid[i + GW] === 0) wake(i, 0.1, 0.4);
+      if (isLoose(grid[i]) && gravelMove(i) >= 0) wake(i, 0.1, 0.4);
   }
   // Where would the gravel cell at index i go? -1 if it stays.
   function gravelMove(i) {
@@ -318,13 +337,17 @@
       return y + 2 < GH && grid[i + 2 * GW] === 0 ? i + 2 * GW : i + GW;
     }
     // Supported from below. It still hops sideways onto a free neighbour when
-    // the surface 3 columns away is 2+ cells lower than this one (steeper than
-    // ~20 degrees), so settled piles keep a slope of about 20 degrees.
-    const d = Math.random() < 0.5 ? -1 : 1;
+    // the surface R columns away is 2+ cells lower than this one: R = 3 for
+    // gravel (piles settle near 20 degrees), R = 1 for dirt (45 degrees).
+    const R = grid[i] === DIRT ? REPOSE_DIRT : REPOSE,
+      d = Math.random() < 0.5 ? -1 : 1;
     for (const dir of [d, -d]) {
-      const nx = x + dir * REPOSE;
+      const nx = x + dir * R;
       if (x + dir < 0 || x + dir >= GW || grid[i + dir] !== 0) continue;
-      if (nx < 0 || nx >= GW || grid[i + GW + dir * REPOSE] !== 0) continue;
+      // steeper than 45 degrees always slides (this also fills narrow cracks);
+      // shallower faces slide only past the material's own angle
+      if (grid[i + GW + dir] === 0) return i + dir;
+      if (nx < 0 || nx >= GW || grid[i + GW + dir * R] !== 0) continue;
       return i + dir;
     }
     return -1;
@@ -350,7 +373,7 @@
         next.push(i);
         continue;
       }
-      if (grid[i] !== GRAVEL) {
+      if (!isLoose(grid[i])) {
         inLoose[i] = 0;
         continue;
       }
@@ -361,10 +384,12 @@
       // a cell can hop several times per frame, so slides finish in seconds
       let cur = i,
         moved = false;
-      for (let hop = 0; hop < 4; hop++) {
+      const mat = grid[i], // dirt or gravel: it keeps its material while it moves
+        R = mat === DIRT ? REPOSE_DIRT : REPOSE;
+      for (let hop = 0; hop < 8; hop++) {
         const j = gravelMove(cur);
         if (j < 0) break;
-        grid[j] = GRAVEL;
+        grid[j] = mat;
         grid[cur] = 0;
         inLoose[cur] = 0;
         const cx = cur % GW,
@@ -381,10 +406,10 @@
           cur - GW + 1,
           cur - 1,
           cur + 1,
-          cur - GW - REPOSE,
-          cur - GW + REPOSE,
-          cur - REPOSE,
-          cur + REPOSE,
+          cur - GW - R,
+          cur - GW + R,
+          cur - R,
+          cur + R,
         ])
           if (w >= 0 && w < GW * GH) wake(w, 0, 0.03);
         cur = j;
@@ -632,6 +657,8 @@
         out: document.createElement("canvas"),
       };
     sp.key = key;
+    sp.ox = o.px;
+    sp.oy = o.py;
     sp.bx = bx;
     sp.by = by;
     sp.bw = bw;
@@ -673,6 +700,47 @@
     sprites.set(o, sp);
     return sp;
   }
+  // ---- falling ore -----------------------------------------------------------
+  // On dirt and gravel levels an ore chunk whose ground has slid or been blasted
+  // away drops until it lands on something. On rock levels everything holds.
+  const oreVel = new WeakMap();
+  let oreCheck = 0;
+  function oreSupported(o) {
+    for (const q of o.cells) if (solidAt(q[0], q[1] + 2)) return true;
+    return false;
+  }
+  function shiftOre(o, dy) {
+    o.py += dy;
+    for (const v of o.verts) v[1] += dy;
+    for (const q of o.cells) q[1] += dy;
+    for (const c of o.cuts) c.py += dy;
+  }
+  function settleOre(frames) {
+    if (S.mineType === "rock") return;
+    oreCheck += frames;
+    const look = oreCheck >= 6;
+    if (look) oreCheck = 0;
+    for (const o of caches) {
+      let v = oreVel.get(o) || 0;
+      if (!v) {
+        if (!look || !o.cells.length || oreSupported(o)) continue;
+        v = 0.5;
+      }
+      v = Math.min(9, v + 0.34 * frames);
+      let move = v * frames;
+      while (move > 0) {
+        const d = Math.min(1, move);
+        shiftOre(o, d);
+        move -= d;
+        if (oreSupported(o)) {
+          v = 0;
+          break;
+        }
+      }
+      oreVel.set(o, v);
+      terrainDirty = true;
+    }
+  }
   function paintVeins() {
     // Ore sits under the terrain layer: it shows only where dirt was carved away.
     const below = new Path2D();
@@ -685,7 +753,13 @@
     for (const o of caches) {
       if (!o.cells.length) continue;
       const sp = oreSprite(o);
-      tx.drawImage(sp.out, sp.bx, sp.by, sp.bw, sp.bh);
+      tx.drawImage(
+        sp.out,
+        sp.bx + (o.px - sp.ox),
+        sp.by + (o.py - sp.oy),
+        sp.bw,
+        sp.bh,
+      );
     }
     tx.restore();
   }
@@ -1012,6 +1086,7 @@
   M.update = (frames) => {
     const scale = Math.min(3, frames);
     stepGravel(scale / 60);
+    settleOre(scale);
     let animate = false;
     for (let i = rings.length - 1; i >= 0; i--) {
       rings[i].r += (rings[i].max || 64) * 0.1 * scale;
@@ -1126,13 +1201,21 @@
     if (S.digScore < goal()) return false;
     S.digScore = 0;
     S.depth++;
+    // every level is a single kind of ground, never the same one twice in a row
+    const others = Object.keys(GROUND).filter((t) => t !== S.mineType);
+    S.mineType = others[Math.floor(Math.random() * others.length)];
     makeWorld();
     window.DeepworksUI.note(
-      "You descended to level " + (S.depth + 1) + ". New ores are rarer.",
+      "You descended to level " +
+        (S.depth + 1) +
+        ": " +
+        GROUND_NAME[S.mineType].toLowerCase() +
+        " ground. New ores are rarer.",
     );
     return true;
   };
   M.goal = goal;
+  M.groundName = () => GROUND_NAME[S.mineType] || "Dirt";
   M.W = W;
   M.H = H;
   M.updateUI = updateUI;

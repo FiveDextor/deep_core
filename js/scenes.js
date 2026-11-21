@@ -175,11 +175,21 @@
         );
     });
     const goal = M.goal();
-    E.text(g, "LEVEL " + (S.depth + 1), x + 16, 462, {
-      size: 12,
-      weight: 800,
-      color: DIM,
-    });
+    E.text(
+      g,
+      "LEVEL " +
+        (S.depth + 1) +
+        " · " +
+        M.groundName().toUpperCase() +
+        " GROUND",
+      x + 16,
+      462,
+      {
+        size: 12,
+        weight: 800,
+        color: DIM,
+      },
+    );
     UI.bar(g, x + 16, 474, w - 32, 12, S.digScore / goal);
     E.text(
       g,
@@ -219,9 +229,16 @@
     );
     E.text(
       g,
-      "Bombs explode 3 s after first impact (dynamite 5 s). Sticky grenades stay where they land. Rock is harder to dig than dirt, and loose gravel slides when undermined.",
+      "Bombs explode 3 s after first impact (dynamite 5 s). Sticky grenades stay where they land.",
       WX,
       634,
+      { size: 13, weight: 500, color: "#7f9a93", maxW: 900 },
+    );
+    E.text(
+      g,
+      "Each level is one kind of ground. Dirt slides when steeper than 45°, gravel when steeper than 20°, rock holds but is harder to dig.",
+      WX,
+      656,
       { size: 13, weight: 500, color: "#7f9a93", maxW: 900 },
     );
     if (
