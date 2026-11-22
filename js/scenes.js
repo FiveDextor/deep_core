@@ -11,7 +11,24 @@
     input = E.input;
   const Scenes = (D.Scenes = {});
   Scenes.current = "mining";
-  let introOpen = true;
+  let introOpen = true,
+    perfOpen = false;
+  const P = D.Perf;
+  P.blockers = () => introOpen || perfOpen;
+  // After a self-refresh the game comes back to the same screen without the intro.
+  try {
+    const r = sessionStorage.getItem("deep-core-refresh");
+    if (r) {
+      sessionStorage.removeItem("deep-core-refresh");
+      const o = JSON.parse(r);
+      if (["mining", "factory", "upgrades"].includes(o.scene))
+        Scenes.current = o.scene;
+      introOpen = false;
+      window.DeepworksUI.note(
+        "The game refreshed itself to keep running smoothly. Nothing was lost.",
+      );
+    }
+  } catch (_) {}
   const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
   const ease = (k) => 1 - (1 - k) * (1 - k);
   const GOLD = "#ffd36b",
@@ -69,9 +86,153 @@
         Scenes.go(t.id);
     });
     const stock = Object.values(S.stock).reduce((a, b) => a + b, 0);
-    pill(g, 710, 11, 168, "CREDITS", "¢" + Math.floor(S.money), GOLD);
-    pill(g, 890, 11, 150, "LEVEL", S.depth + 1, MINT);
-    pill(g, 1052, 11, 200, "WEAPONS", stock, "#ff9a4d");
+    pill(g, 688, 11, 168, "CREDITS", "¢" + Math.floor(S.money), GOLD);
+    pill(g, 866, 11, 110, "LEVEL", S.depth + 1, MINT);
+    pill(g, 986, 11, 140, "WEAPONS", stock, "#ff9a4d");
+    if (
+      UI.button(g, "perf", 1142, 10, 122, 40, "Perf", {
+        icon: "⚙",
+        iconSize: 17,
+        align: "left",
+        active: perfOpen,
+        size: 14,
+        tip: "Speed and memory settings: picture quality and self-refresh",
+      })
+    )
+      perfOpen = !perfOpen;
+  }
+
+  // ---- performance panel -------------------------------------------------------
+  function drawPerf(g) {
+    const x = 852,
+      y = 68,
+      w = 412,
+      h = 372,
+      st = P.settings();
+    UI.panel(g, x, y, w, h, {
+      fill: "rgba(14,25,29,.98)",
+      stroke: "#58807a",
+      r: 14,
+      lw: 2,
+    });
+    E.text(g, "PERFORMANCE", x + 18, y + 24, {
+      size: 15,
+      weight: 900,
+      color: GOLD,
+    });
+    const healthy = P.fps >= 50 ? MINT : P.fps >= 30 ? GOLD : "#e0806e";
+    E.text(
+      g,
+      Math.round(P.fps) + " fps · " + P.ms.toFixed(1) + " ms",
+      x + w - 18,
+      y + 24,
+      {
+        size: 13,
+        weight: 800,
+        color: healthy,
+        align: "right",
+      },
+    );
+    E.text(g, "Picture quality", x + 18, y + 58, {
+      size: 12,
+      weight: 800,
+      color: DIM,
+    });
+    const tips = {
+      auto: "Starts high and lowers itself when the game runs slowly.",
+      high: "Sharpest picture, all effects.",
+      medium: "Lower resolution and fewer particles.",
+      low: "Lowest resolution, few particles, and every other frame is drawn.",
+    };
+    P.QUALITIES.forEach((q, i) => {
+      if (
+        UI.button(
+          g,
+          "pq" + q,
+          x + 18 + i * 96,
+          y + 70,
+          90,
+          34,
+          q[0].toUpperCase() + q.slice(1),
+          {
+            active: st.quality === q,
+            size: 13,
+            tip: tips[q],
+          },
+        )
+      )
+        P.setQuality(q);
+    });
+    E.text(
+      g,
+      "Now using: " +
+        P.levelName() +
+        (st.quality === "auto"
+          ? " (changes by itself when the game runs slowly)"
+          : ""),
+      x + 18,
+      y + 124,
+      { size: 12, weight: 500, color: DIM, maxW: w - 36 },
+    );
+    E.text(g, "Auto refresh", x + 18, y + 160, {
+      size: 12,
+      weight: 800,
+      color: DIM,
+    });
+    [
+      [0, "Off"],
+      [15, "15 min"],
+      [30, "30 min"],
+      [60, "60 min"],
+    ].forEach(([m, label], i) => {
+      if (
+        UI.button(g, "pr" + m, x + 18 + i * 96, y + 172, 90, 34, label, {
+          active: st.autoRefresh === m,
+          size: 13,
+          tip: m
+            ? "Save and reload the page every " +
+              m +
+              " minutes when nothing is moving."
+            : "Never refresh by itself.",
+        })
+      )
+        st.autoRefresh = m;
+    });
+    const left = P.refreshIn();
+    E.text(
+      g,
+      left === null
+        ? "Self-refresh is off."
+        : "Next refresh in " +
+            Math.floor(left / 60) +
+            ":" +
+            String(Math.floor(left % 60)).padStart(2, "0") +
+            " (only at a calm moment)",
+      x + 18,
+      y + 228,
+      { size: 12, weight: 500, color: DIM, maxW: w - 36 },
+    );
+    E.wrap(
+      g,
+      "Lower quality draws fewer pixels and effects. Self-refresh saves your game, then reloads the page at a moment when nothing is flying or sliding, to free up memory.",
+      x + 18,
+      y + 256,
+      w - 36,
+      { size: 12, weight: 500, color: "#7f9a93", lh: 17 },
+    );
+    if (
+      UI.button(g, "refreshNow", x + 18, y + h - 52, 184, 36, "Refresh now", {
+        size: 13,
+        tip: "Save and reload the page right now.",
+      })
+    )
+      P.refreshNow();
+    if (
+      UI.button(g, "perfClose", x + w - 202, y + h - 52, 184, 36, "Close", {
+        size: 13,
+      })
+    )
+      perfOpen = false;
   }
   function messageBar(g) {
     UI.panel(g, 16, 682, 1248, 32, {
@@ -115,15 +276,31 @@
       input.y >= WY &&
       input.y <= WY + 520;
     if (hover && !M.aiming()) {
-      const ax = clamp(input.x - WX, 8, 892);
-      g.strokeStyle = "rgba(255,226,138,.35)";
+      const ax = clamp(input.x - WX, 8, 892),
+        ay = clamp(input.y - WY, 8, 512),
+        spot = M.placeSpot(ax, ay),
+        col = spot ? "255,226,138" : "255,110,96";
+      g.strokeStyle = "rgba(" + col + ",.35)";
       g.lineWidth = 2;
       g.setLineDash([5, 6]);
       g.beginPath();
       g.moveTo(ax, 0);
-      g.lineTo(ax, clamp(input.y - WY, 8, 512));
+      g.lineTo(ax, ay);
       g.stroke();
       g.setLineDash([]);
+      g.strokeStyle = "rgba(" + col + ",.9)";
+      g.lineWidth = 2.5;
+      g.beginPath();
+      g.arc(spot ? spot.x : ax, spot ? spot.y : ay, 11, 0, 6.29);
+      g.stroke();
+      if (!spot)
+        E.text(g, "No room here", clamp(ax, 50, 850), ay - 22, {
+          size: 12,
+          weight: 800,
+          color: "#ff8a7a",
+          align: "center",
+          shadow: true,
+        });
     }
     g.restore();
 
@@ -138,17 +315,49 @@
           .filter(([r]) => r !== "seconds")
           .map(([r, n]) => n + " " + (r === "grenade" ? "hand grenade" : r))
           .join(" + ");
+      const gooRow = k === "sticky" && (S.skills.stickyGoo || 0) > 0;
       if (
-        UI.button(g, "w" + k, x + 12, 104 + i * 52, w - 24, 46, wp.name, {
-          icon: wp.icon,
-          align: "left",
-          sub: "In stock: " + S.stock[k],
-          active: S.selectedWeapon === k,
-          disabled: S.stock[k] < 1,
-          tip: wp.name + " · Recipe: " + recipe,
-        })
+        UI.button(
+          g,
+          "w" + k,
+          x + 12,
+          104 + i * 52,
+          w - 24 - (gooRow ? 78 : 0),
+          46,
+          wp.name,
+          {
+            icon: wp.icon,
+            align: "left",
+            sub: "In stock: " + S.stock[k],
+            active: S.selectedWeapon === k,
+            disabled: S.stock[k] < 1,
+            tip: wp.name + " · Recipe: " + recipe,
+          },
+        )
       )
         M.selectWeapon(k);
+      if (gooRow) {
+        const on = S.settings.gooOn !== false;
+        if (
+          UI.button(
+            g,
+            "gooToggle",
+            x + w - 12 - 72,
+            104 + i * 52,
+            72,
+            46,
+            "Goo",
+            {
+              sub: on ? "ON" : "OFF",
+              subColor: on ? "#9ff0c4" : "#c98b80",
+              active: on,
+              size: 13,
+              tip: "Sticky goo: when on, an exploding sticky grenade throws goo blobs that other weapons stick to for 5 seconds.",
+            },
+          )
+        )
+          S.settings.gooOn = !on;
+      }
     });
     E.text(g, "ORE CARGO", x + 16, 324, { size: 12, weight: 800, color: DIM });
     D.ores.forEach((o, i) => {
@@ -789,88 +998,362 @@
     );
   }
 
-  // ---- upgrades ------------------------------------------------------------
+  // ---- upgrades: a research tree -----------------------------------------------
+  // Nodes grow out of the CORE like a Mindustry research tree. A node unlocks once
+  // the node it hangs off has reached the level it asks for, and every node can
+  // still be upgraded level by level.
   const upFx = UI.makeFx();
+  const TREE = { x: 16, y: 72, w: 900, h: 600 },
+    NODE_W = 156,
+    NODE_H = 64,
+    COL_W = 176,
+    ROW_UP = 84;
+  const ICONS = {
+    blast: "💥",
+    grenadeRadius: "💣",
+    dynamiteShards: "🧨",
+    stickyRadius: "🟢",
+    stickyGoo: "🧪",
+    oreYield: "⛏",
+    throwForce: "💪",
+    generators: "⚙️",
+    assembly: "🔧",
+    buffer: "📦",
+    storage: "🏬",
+    sellerSpeed: "⏱",
+    sellerValue: "💰",
+  };
+  const POS = {
+    core: [0, 4.2],
+    blast: [1, 1.5],
+    grenadeRadius: [2, 0],
+    dynamiteShards: [2, 1],
+    oreYield: [2, 2],
+    throwForce: [2, 3],
+    stickyRadius: [3, 0],
+    stickyGoo: [4, 0],
+    generators: [1, 5],
+    assembly: [2, 4.5],
+    buffer: [2, 5.5],
+    storage: [1, 7],
+    sellerSpeed: [2, 6.5],
+    sellerValue: [2, 7.5],
+  };
+  let selUp = "blast";
+  const nodeXY = (id) => [
+    TREE.x + 14 + POS[id][0] * COL_W,
+    TREE.y + 18 + POS[id][1] * ROW_UP,
+  ];
+  function treeEdge(g, a, b, on) {
+    const ax = a[0] + NODE_W,
+      ay = a[1] + NODE_H / 2,
+      bx = b[0],
+      by = b[1] + NODE_H / 2,
+      mx = (ax + bx) / 2;
+    g.lineCap = g.lineJoin = "round";
+    g.lineWidth = 4;
+    g.strokeStyle = on ? "#3fae8c" : "#223234";
+    g.beginPath();
+    g.moveTo(ax, ay);
+    g.lineTo(mx, ay);
+    g.lineTo(mx, by);
+    g.lineTo(bx, by);
+    g.stroke();
+    if (on) {
+      g.setLineDash([2, 12]); // light travels down unlocked links
+      g.lineDashOffset = -E.time * 40;
+      g.strokeStyle = "#d9fff0";
+      g.lineWidth = 2;
+      g.stroke();
+      g.setLineDash([]);
+    }
+  }
   function drawUpgrades(g) {
-    const branches = ["Mining", "Factory", "Commerce"];
-    branches.forEach((b, bi) => {
-      const x = 16 + bi * 420,
-        w = 408;
-      UI.panel(g, x, 68, w, 604);
-      E.text(g, b.toUpperCase(), x + 18, 90, {
-        size: 17,
+    const ups = F.UPGRADES,
+      byId = Object.fromEntries(ups.map((u) => [u.id, u]));
+    // tree area
+    UI.panel(g, TREE.x, TREE.y - 4, TREE.w, TREE.h + 4, {
+      fill: "#0b1518",
+      stroke: "#2a4245",
+      r: 14,
+    });
+    UI.scrollBegin(
+      g,
+      "tree",
+      TREE.x,
+      TREE.y,
+      TREE.w,
+      TREE.h - 2,
+      18 + 7.5 * ROW_UP + NODE_H + 24,
+    );
+    // links first, so the cards sit on top of them
+    for (const u of ups) {
+      const parent = u.requires ? u.requires.id : "core",
+        on = !u.requires || (S.skills[u.requires.id] || 0) >= u.requires.level;
+      treeEdge(g, nodeXY(parent), nodeXY(u.id), on);
+    }
+    // the core
+    {
+      const [x, y] = nodeXY("core");
+      if (
+        UI.button(g, "ncore", x, y, NODE_W, NODE_H, "DEEP CORE", {
+          icon: "⛏",
+          align: "left",
+          sub: "Research starts here",
+          fill: "#2b2a18",
+          stroke: GOLD,
+          color: GOLD,
+          subColor: "#c9b27a",
+          size: 15,
+        })
+      )
+        selUp = "core";
+      if (selUp === "core") {
+        g.strokeStyle = "#fff";
+        g.lineWidth = 3;
+        E.rr(g, x - 3, y - 3, NODE_W + 6, NODE_H + 6, 11);
+        g.stroke();
+      }
+    }
+    for (const u of ups) {
+      const [x, y] = nodeXY(u.id),
+        info = F.upgradeInfo(u),
+        locked = info.locked,
+        style = info.max
+          ? { fill: "#463a1b", stroke: GOLD, color: "#ffe8a8" }
+          : locked
+            ? { fill: "#0f181b", stroke: "#26393b", color: "#667c79" }
+            : info.lv > 0
+              ? { fill: "#1b3a32", stroke: "#4e9d82", color: undefined }
+              : { fill: "#1a2c31", stroke: "#4a8c80", color: undefined };
+      const sub = info.max
+        ? "MAX LEVEL"
+        : locked
+          ? "🔒 Locked"
+          : "Lv " + info.lv + "/" + info.maxLv + " · ¢" + info.cost;
+      if (
+        UI.button(g, "n" + u.id, x, y, NODE_W, NODE_H, u.name, {
+          icon: ICONS[u.id],
+          iconSize: 20,
+          align: "left",
+          sub,
+          subSize: 11,
+          fill: style.fill,
+          stroke: style.stroke,
+          color: style.color,
+          subColor: info.max
+            ? "#e8cf88"
+            : locked
+              ? "#566a68"
+              : info.afford
+                ? "#9ff0c4"
+                : "#e0a090",
+          size: 12.5,
+          tip: u.detail,
+        })
+      )
+        selUp = u.id;
+      // level pips along the bottom edge
+      const n = info.maxLv,
+        pw = (NODE_W - 24 - (n - 1) * 3) / n;
+      for (let p = 0; p < n; p++) {
+        E.rr(g, x + 12 + p * (pw + 3), y + NODE_H - 8, pw, 4, 2);
+        g.fillStyle =
+          p < info.lv ? (info.max ? GOLD : MINT) : "rgba(255,255,255,.1)";
+        g.fill();
+      }
+      if (selUp === u.id) {
+        g.strokeStyle = "#fff";
+        g.lineWidth = 3;
+        E.rr(g, x - 3, y - 3, NODE_W + 6, NODE_H + 6, 11);
+        g.stroke();
+      }
+    }
+    upFx.draw(g);
+    UI.scrollEnd(g);
+    E.text(
+      g,
+      "Drag or scroll to look around the tree",
+      TREE.x + TREE.w - 14,
+      TREE.y + TREE.h - 12,
+      { size: 11, weight: 500, color: "#4f6b6d", align: "right" },
+    );
+
+    // ---- details of the selected node
+    const px = SIDE.x,
+      pw2 = SIDE.w;
+    UI.panel(g, px, SIDE.y - 4, pw2, SIDE.h + 4);
+    if (selUp === "core") {
+      E.text(g, "⛏", px + 36, 108, { size: 34, weight: 400, align: "center" });
+      E.text(g, "DEEP CORE", px + 66, 106, {
+        size: 19,
         weight: 900,
         color: GOLD,
       });
-      const list = F.UPGRADES.filter((u) => u.branch === b);
-      g.strokeStyle = "#2c4a4a";
-      g.lineWidth = 3;
-      g.beginPath();
-      g.moveTo(x + 22, 112);
-      g.lineTo(x + 22, 112 + (list.length - 1) * 92 + 44);
-      g.stroke();
-      list.forEach((u, i) => {
-        const y = 108 + i * 92,
-          info = F.upgradeInfo(u),
-          nx = x + 12,
-          nw = w - 24;
-        const status = info.max
-          ? "MAX"
-          : info.locked
-            ? "Requires " + info.req.name + " Lv " + u.requires.level
-            : "Next · ¢" + info.cost;
-        const col = info.max
-          ? MINT
-          : info.locked
-            ? "#7f8f8c"
-            : info.afford
-              ? "#9ff0c4"
-              : "#e0a090";
-        if (
-          UI.button(g, "up" + u.id, nx, y, nw, 84, u.name, {
-            align: "left",
-            size: 15,
-            sub: u.detail,
-            subSize: 11.5,
-            disabled: info.locked || info.max,
-            active: info.lv > 0,
-            activeFill: "#1d3b33",
-            activeStroke: "#4e9d82",
-            tip: u.detail + " · Up to level 10",
-          })
-        ) {
-          if (F.buyUpgrade(u.id)) {
-            upFx.burst(nx + nw / 2, y + 42, "#9ff0c4", 14);
-            UI.note(u.name + " upgraded to level " + (info.lv + 1) + ".");
-          } else
-            UI.note(
-              info.afford
-                ? "Locked: " + status
-                : "Not enough credits for " + u.name + " (¢" + info.cost + ").",
-            );
-        }
-        // level pips + status drawn over the button
-        for (let p = 0; p < 10; p++) {
-          E.rr(g, nx + 14 + p * 17, y + 66, 13, 6, 3);
-          g.fillStyle = p < info.lv ? MINT : "#16262a";
-          g.fill();
-        }
-        E.text(g, "Lv " + info.lv + " / 10", nx + nw - 14, y + 18, {
-          size: 12,
-          weight: 800,
-          color: info.lv ? MINT : DIM,
-          align: "right",
-        });
-        E.text(g, status, nx + nw - 14, y + 68, {
-          size: 12,
-          weight: 800,
-          color: col,
-          align: "right",
-          maxW: 170,
-        });
-      });
+      E.wrap(
+        g,
+        "Every upgrade grows out of the core. Start with the first node of a branch, then unlock the nodes connected to it by raising it to the level they ask for.",
+        px + 20,
+        150,
+        pw2 - 40,
+        { size: 13.5, color: "#cfe0da", lh: 19 },
+      );
+      E.wrap(
+        g,
+        "Every node can be upgraded again and again until its level bar is full.",
+        px + 20,
+        250,
+        pw2 - 40,
+        { size: 13, color: DIM, lh: 18 },
+      );
+      return;
+    }
+    const u = byId[selUp],
+      info = F.upgradeInfo(u),
+      metReq =
+        !u.requires || (S.skills[u.requires.id] || 0) >= u.requires.level;
+    E.text(g, ICONS[u.id], px + 36, 108, {
+      size: 34,
+      weight: 400,
+      align: "center",
     });
-    upFx.draw(g);
+    E.text(g, u.name, px + 66, 98, { size: 18, weight: 900, maxW: pw2 - 84 });
+    E.text(g, u.branch.toUpperCase() + " BRANCH", px + 66, 120, {
+      size: 11,
+      weight: 800,
+      color: GOLD,
+    });
+    const used = E.wrap(g, u.detail, px + 20, 152, pw2 - 40, {
+      size: 13.5,
+      color: "#cfe0da",
+      lh: 19,
+    });
+    let y = 152 + used + 14;
+    E.text(g, "Level " + info.lv + " / " + info.maxLv, px + 20, y + 8, {
+      size: 14,
+      weight: 900,
+      color: info.lv ? MINT : DIM,
+    });
+    UI.bar(g, px + 20, y + 22, pw2 - 40, 10, info.lv / info.maxLv, {
+      color: info.max ? GOLD : MINT,
+    });
+    y += 52;
+    if (u.requires) {
+      const rq = byId[u.requires.id];
+      E.text(
+        g,
+        (metReq ? "✔ " : "✖ ") +
+          "Needs " +
+          rq.name +
+          " level " +
+          u.requires.level +
+          (metReq ? "" : " (now " + (S.skills[rq.id] || 0) + ")"),
+        px + 20,
+        y,
+        {
+          size: 13,
+          weight: 700,
+          color: metReq ? "#9ff0c4" : "#e0a090",
+          maxW: pw2 - 40,
+        },
+      );
+    } else
+      E.text(g, "✔ No requirement: this node is open", px + 20, y, {
+        size: 13,
+        weight: 700,
+        color: "#9ff0c4",
+      });
+    y += 26;
+    E.text(
+      g,
+      info.max
+        ? "Fully upgraded"
+        : "Next level: ¢" +
+            info.cost +
+            "  (you have ¢" +
+            Math.floor(S.money) +
+            ")",
+      px + 20,
+      y,
+      {
+        size: 13,
+        weight: 700,
+        color: info.max ? GOLD : info.afford ? "#9ff0c4" : "#e0a090",
+        maxW: pw2 - 40,
+      },
+    );
+    y += 22;
+    if (
+      UI.button(
+        g,
+        "buyUp",
+        px + 20,
+        y,
+        pw2 - 40,
+        46,
+        info.max
+          ? "Max level"
+          : info.locked
+            ? "Locked"
+            : "Upgrade · ¢" + info.cost,
+        {
+          disabled: info.max || info.locked || !info.afford,
+          size: 16,
+          fill: "#25624f",
+          stroke: "#7ee2b8",
+          tip: info.locked
+            ? "Raise the node it hangs off first."
+            : info.afford
+              ? ""
+              : "Not enough credits.",
+        },
+      )
+    ) {
+      if (F.buyUpgrade(u.id)) {
+        const [nx, ny] = nodeXY(u.id);
+        upFx.burst(nx + NODE_W / 2, ny + NODE_H / 2, "#9ff0c4", 16); // drawn inside the scrolled tree, so tree coordinates
+        UI.note(u.name + " upgraded to level " + (info.lv + 1) + ".");
+      }
+    }
+    y += 62;
+    if (u.id === "stickyGoo") {
+      const on = S.settings.gooOn !== false,
+        lv = S.skills.stickyGoo || 0;
+      E.text(
+        g,
+        lv
+          ? "Goo blobs per explosion: " + (5 + lv * 2)
+          : "Goo blobs per explosion: 0 (not unlocked)",
+        px + 20,
+        y,
+        { size: 13, weight: 600, color: "#cfe0da" },
+      );
+      y += 20;
+      E.text(g, "Blobs last 5 seconds after landing.", px + 20, y, {
+        size: 12,
+        weight: 500,
+        color: DIM,
+      });
+      y += 22;
+      if (
+        UI.button(
+          g,
+          "gooSwitch",
+          px + 20,
+          y,
+          pw2 - 40,
+          42,
+          "Goo effect: " + (on ? "ON" : "OFF"),
+          {
+            disabled: lv < 1,
+            active: on && lv > 0,
+            size: 14,
+            tip: "Switch the goo on or off without losing the upgrade.",
+          },
+        )
+      )
+        S.settings.gooOn = !on;
+    }
   }
 
   // ---- intro modal ---------------------------------------------------------
@@ -948,13 +1431,15 @@
   Scenes.draw = (g) => {
     UI.beginFrame();
     background(g);
-    UI.blocked = introOpen;
+    UI.blocked = introOpen || perfOpen;
     const s = Scenes.current;
     if (s === "mining") drawMining(g);
     else if (s === "factory") drawFactory(g);
     else drawUpgrades(g);
+    UI.blocked = introOpen;
     topBar(g);
     messageBar(g);
+    if (perfOpen && !introOpen) drawPerf(g);
     if (introOpen) drawIntro(g);
     UI.blocked = false;
     UI.endFrame(g);
@@ -964,18 +1449,18 @@
   const inWorld = (x, y) =>
     x >= WX && x <= WX + 900 && y >= WY && y <= WY + 520;
   E.on.down = (x, y) => {
-    if (introOpen || Scenes.current !== "mining") return;
+    if (introOpen || perfOpen || Scenes.current !== "mining") return;
     if (inWorld(x, y)) M.pointerDown(x - WX, y - WY);
   };
   E.on.move = (x, y) => {
-    if (introOpen || Scenes.current !== "mining") return;
+    if (introOpen || perfOpen || Scenes.current !== "mining") return;
     if (M.aiming() || inWorld(x, y)) M.pointerMove(x - WX, y - WY);
   };
   E.on.up = (x, y, ok) => {
     if (M.aiming()) M.pointerUp(x - WX, y - WY, ok);
   };
   E.on.key = (e) => {
-    if (introOpen) return;
+    if (introOpen || perfOpen) return;
     if (e.code === "Space" && Scenes.current === "mining") {
       e.preventDefault();
       M.drop();

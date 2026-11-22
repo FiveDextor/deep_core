@@ -41,6 +41,16 @@
       requires: { id: "grenadeRadius", level: 2 },
     },
     {
+      id: "stickyGoo",
+      branch: "Mining",
+      name: "Sticky goo",
+      detail:
+        "Sticky grenades burst into goo blobs when they explode. Other weapons stick to the goo for 5 seconds. You can switch it on or off. Each level adds more blobs.",
+      base: 120,
+      max: 5,
+      requires: { id: "stickyRadius", level: 2 },
+    },
+    {
       id: "oreYield",
       branch: "Mining",
       name: "Ore recovery",
@@ -609,7 +619,15 @@
       locked = !!(
         u.requires && (S.skills[u.requires.id] || 0) < u.requires.level
       );
-    return { lv, cost, locked, max: lv >= 10, afford: S.money >= cost, req };
+    return {
+      lv,
+      cost,
+      locked,
+      max: lv >= (u.max || 10),
+      maxLv: u.max || 10,
+      afford: S.money >= cost,
+      req,
+    };
   };
   F.buyUpgrade = (k) => {
     const u = UPGRADES.find((x) => x.id === k);

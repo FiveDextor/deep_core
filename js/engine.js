@@ -22,6 +22,9 @@
     dpr: 1,
     time: 0,
     dt: 0.016,
+    dprCap: 2, // highest render resolution (device pixels per css pixel); Perf lowers it
+    frameSkip: 0, // 1 = draw every other frame (the game logic still runs every frame)
+    fxScale: 1, // scales particle counts; Perf lowers it
   });
   const input = (E.input = {
     x: -1000,
@@ -42,7 +45,7 @@
   function resize() {
     const cw = window.innerWidth,
       ch = window.innerHeight,
-      dpr = Math.min(window.devicePixelRatio || 1, 2);
+      dpr = Math.min(window.devicePixelRatio || 1, E.dprCap);
     canvas.width = Math.max(1, Math.round(cw * dpr));
     canvas.height = Math.max(1, Math.round(ch * dpr));
     E.dpr = dpr;
@@ -51,6 +54,7 @@
     E.oy = (ch - VH * E.scale) / 2;
     E.onResize.forEach((f) => f());
   }
+  E.resize = resize;
   const vx = (e) => (e.clientX - E.ox) / E.scale,
     vy = (e) => (e.clientY - E.oy) / E.scale;
 
@@ -169,27 +173,38 @@
   E.start = (cfg) => {
     resize();
     window.addEventListener("resize", resize);
-    let last = performance.now();
+    let last = performance.now(),
+      drawAcc = 0,
+      frameN = 0;
     function frame(now) {
       const real = Math.max(0, (now - last) / 1000);
       last = now;
       E.dt = Math.min(real, 0.05);
       E.time += E.dt;
+      drawAcc += E.dt;
       cfg.update(real);
-      g.setTransform(1, 0, 0, 1, 0, 0);
-      g.fillStyle = "#070d10";
-      g.fillRect(0, 0, canvas.width, canvas.height);
-      const k = E.dpr * E.scale;
-      g.setTransform(k, 0, 0, k, E.dpr * E.ox, E.dpr * E.oy);
-      g.save();
-      g.beginPath();
-      g.rect(0, 0, VW, VH);
-      g.clip();
-      cfg.draw(g);
-      g.restore();
-      input.pressed = input.released = false;
-      input.wheel = 0;
-      if (input.touch && !input.down) input.x = input.y = -1000;
+      // On low quality only every other frame is drawn; input flags are kept
+      // until a frame that actually draws has seen them.
+      if (frameN++ % (E.frameSkip + 1) === 0) {
+        const updateDt = E.dt;
+        E.dt = Math.min(drawAcc, 0.1);
+        drawAcc = 0;
+        g.setTransform(1, 0, 0, 1, 0, 0);
+        g.fillStyle = "#070d10";
+        g.fillRect(0, 0, canvas.width, canvas.height);
+        const k = E.dpr * E.scale;
+        g.setTransform(k, 0, 0, k, E.dpr * E.ox, E.dpr * E.oy);
+        g.save();
+        g.beginPath();
+        g.rect(0, 0, VW, VH);
+        g.clip();
+        cfg.draw(g);
+        g.restore();
+        E.dt = updateDt;
+        input.pressed = input.released = false;
+        input.wheel = 0;
+        if (input.touch && !input.down) input.x = input.y = -1000;
+      }
       requestAnimationFrame(frame);
     }
     requestAnimationFrame(frame);

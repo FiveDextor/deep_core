@@ -526,6 +526,7 @@
     w0 = W();
     h0 = H();
     bombs = [];
+    goo = [];
     terrainDirty = true;
     buildGrid();
     makeCaches();
@@ -617,9 +618,16 @@
       }
     }
     caches = caches.filter((o) => o.cells.length >= MIN_ORE_CELLS);
+    if (b.weapon === "sticky" && M.gooActive()) spawnGoo(b.px, py);
+    for (const k of bombs)
+      if (k.stuckOre && !caches.includes(k.stuckOre)) {
+        k.stuckOre = null; // its ore is gone: it falls
+        k.stuck = false;
+      }
     shake = 7;
     rings.push({ px: b.px, py, r: 0, t: 1, max: rad });
-    for (let i = 0; i < 26; i++) {
+    const dustN = Math.max(8, Math.round(26 * (D.Engine.fxScale ?? 1)));
+    for (let i = 0; i < dustN; i++) {
       let a = Math.random() * 6.28,
         v = 1 + Math.random() * 5;
       dust.push({
@@ -705,13 +713,15 @@
   // On dirt and gravel levels an ore chunk whose ground has slid or been blasted
   // away drops until it lands on something. On rock levels everything holds.
   const oreVel = new WeakMap();
-  let oreCheck = 0;
+  let oreCheck = 0,
+    oreFalling = false;
   function oreSupported(o) {
     for (const q of o.cells) if (solidAt(q[0], q[1] + 2)) return true;
     return false;
   }
   function shiftOre(o, dy) {
     o.py += dy;
+    for (const b of bombs) if (b.stuckOre === o) b.py += dy; // a sticky grenade follows its ore
     for (const v of o.verts) v[1] += dy;
     for (const q of o.cells) q[1] += dy;
     for (const c of o.cuts) c.py += dy;
@@ -721,6 +731,7 @@
     oreCheck += frames;
     const look = oreCheck >= 6;
     if (look) oreCheck = 0;
+    let any = false;
     for (const o of caches) {
       let v = oreVel.get(o) || 0;
       if (!v) {
@@ -740,7 +751,9 @@
       }
       oreVel.set(o, v);
       terrainDirty = true;
+      any = any || v > 0;
     }
+    oreFalling = any;
   }
   function paintVeins() {
     // Ore sits under the terrain layer: it shows only where dirt was carved away.
@@ -795,6 +808,26 @@
       if (shake < 0.3) shake = 0;
     }
     ctx.drawImage(terrain, 0, 0, w, h);
+    for (const g of goo) {
+      const stuck = g.state === "stuck",
+        fade = stuck ? Math.min(1, g.life) : 1,
+        r = stuck
+          ? g.r * (0.6 + 0.4 * fade) * (0.94 + 0.06 * Math.sin(g.t * 9))
+          : 5;
+      ctx.globalAlpha = 0.92 * fade;
+      ctx.fillStyle = "#5bd65c";
+      ctx.strokeStyle = "#2c8a3a";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(g.x, g.y, r, 0, 6.29);
+      ctx.fill();
+      ctx.stroke();
+      ctx.fillStyle = "#c8ffb0";
+      ctx.beginPath();
+      ctx.arc(g.x - r * 0.3, g.y - r * 0.3, r * 0.28, 0, 6.29);
+      ctx.fill();
+      ctx.globalAlpha = 1;
+    }
     for (const b of bombs) {
       ctx.save();
       ctx.translate(b.px, b.py);
@@ -905,6 +938,53 @@
     }
     ctx.restore();
   };
+  // ---- placing a weapon ------------------------------------------------------------
+  // A bomb needs a free gap around its start point: not inside dirt, gravel, rock
+  // or ore, and not in a hole narrower than about 22px. Clicking within a few
+  // pixels above the ground still works (it is nudged up out of the way).
+  const PLACE_R = BOMB_R + 3;
+  const placeRing = [[0, 0]];
+  for (let k = 0; k < 16; k++) {
+    const a = (k * Math.PI) / 8;
+    placeRing.push([Math.cos(a) * PLACE_R, Math.sin(a) * PLACE_R]);
+    if (k % 2 === 0)
+      placeRing.push([
+        Math.cos(a) * PLACE_R * 0.5,
+        Math.sin(a) * PLACE_R * 0.5,
+      ]);
+  }
+  function roomAt(x, y) {
+    for (const [dx, dy] of placeRing) {
+      const px = x + dx,
+        py = y + dy;
+      if (py < 0 || px < 0 || px >= W()) continue; // above the top / off the side: open air
+      if (py >= H() || solidAt(px, py)) return false;
+    }
+    for (const o of caches) {
+      if (
+        Math.abs(o.px - x) > o.rx + PLACE_R + 2 ||
+        Math.abs(o.py - y) > o.ry + PLACE_R + 2
+      )
+        continue;
+      for (const q of o.cells) {
+        const dx = q[0] - x,
+          dy = q[1] - y;
+        if (dx * dx + dy * dy < PLACE_R * PLACE_R && !solidAt(q[0], q[1]))
+          return false;
+      }
+    }
+    return true;
+  }
+  // The spot a weapon would really start from, or null if there is no room there.
+  function placeSpot(px, py) {
+    px = Math.max(BOMB_R, Math.min(W() - BOMB_R, px));
+    py = Math.max(BOMB_R, Math.min(H() - BOMB_R, py));
+    for (const lift of [0, 2, 4, 6, 8, 10, 12])
+      if (roomAt(px, py - lift))
+        return { x: px, y: Math.max(BOMB_R, py - lift) };
+    return null;
+  }
+  M.placeSpot = placeSpot;
   function launchBomb(px, py, vx = 0, vy = 0) {
     if (S.stock[S.selectedWeapon] < 1) {
       window.DeepworksUI.note(
@@ -914,6 +994,15 @@
       );
       return false;
     }
+    const spot = placeSpot(px, py);
+    if (!spot) {
+      window.DeepworksUI.note(
+        "No room to place it there. A bomb needs a free gap about 22 px wide, and it can't start inside dirt, gravel, rock or ore.",
+      );
+      return false;
+    }
+    px = spot.x;
+    py = spot.y;
     S.stock[S.selectedWeapon]--;
     let w = D.weapons[S.selectedWeapon],
       specificRadius =
@@ -923,9 +1012,6 @@
             ? S.skills.stickyRadius * 0.08
             : 0;
     const fuseTime = S.selectedWeapon === "dynamite" ? 5 : 3;
-    px = Math.max(8, Math.min(W() - 8, px));
-    py = Math.max(8, Math.min(H() - 8, py));
-    while (py > 8 && solidAt(px, py)) py -= 2; // aimed into the ground: start from its surface
     bombs.push({
       px,
       py,
@@ -941,7 +1027,8 @@
     window.DeepworksUI.note(
       w.name +
         (S.selectedWeapon === "sticky"
-          ? " thrown. It sticks wherever it lands, then explodes after 3 seconds."
+          ? " thrown. It sticks wherever it lands, then explodes after 3 seconds" +
+            (M.gooActive() ? " and bursts into goo." : ".")
           : " thrown. It explodes " +
             fuseTime +
             " seconds after first impact."),
@@ -985,11 +1072,14 @@
     return hit;
   }
   // Exposed ore pushes back along the average direction of all cells it touches.
+  let lastOreHit = null; // the ore chunk the last collideOre() call touched
   function collideOre(b) {
     let sx = 0,
       sy = 0,
       n = 0,
-      minD = BOMB_R;
+      minD = BOMB_R,
+      best = null;
+    lastOreHit = null;
     for (const o of caches) {
       if (
         Math.abs(o.px - b.px) > o.rx + BOMB_R + 2 ||
@@ -1006,10 +1096,14 @@
         sx += dx / d;
         sy += dy / d;
         n++;
-        if (d < minD) minD = d;
+        if (d < minD) {
+          minD = d;
+          best = o;
+        }
       }
     }
     if (!n) return null;
+    lastOreHit = best;
     const len = Math.hypot(sx, sy);
     const nx = len > 0.001 ? sx / len : 0,
       ny = len > 0.001 ? sy / len : -1;
@@ -1018,7 +1112,23 @@
     return { nx, ny };
   }
   function stepBomb(b, ds) {
-    if (b.stuck) return; // a stuck sticky grenade never moves again
+    if (b.stuck) return; // a stuck bomb never moves again (until its goo wears off or its ore is gone)
+    for (const g of goo) {
+      if (g.state !== "stuck") continue;
+      const dx = b.px - g.x,
+        dy = b.py - g.y,
+        rr = g.r + BOMB_R;
+      if (dx * dx + dy * dy < rr * rr) {
+        b.stuck = true; // touched goo: stuck to it
+        b.gooBlob = g;
+        b.vx = b.vy = 0;
+        if (!b.fuseStarted) {
+          b.fuseStarted = true;
+          b.fuse = b.fuseTime || 3;
+        }
+        return;
+      }
+    }
     b.vy += 0.34 * ds;
     b.px += b.vx * ds;
     b.py += b.vy * ds;
@@ -1032,7 +1142,8 @@
       b.py = H() - BOMB_R;
       b.vy = 0;
     }
-    const n = collideGround(b) || collideOre(b);
+    const onGround = collideGround(b),
+      n = onGround || collideOre(b);
     if (!n) return;
     if (!b.fuseStarted) {
       b.fuseStarted = true;
@@ -1042,6 +1153,7 @@
       b.vx = 0;
       b.vy = 0;
       b.stuck = true;
+      if (!onGround && lastOreHit) b.stuckOre = lastOreHit; // rides along if that ore falls
       return;
     }
     const vn = b.vx * n.nx + b.vy * n.ny;
@@ -1060,6 +1172,86 @@
     if (n.ny < -0.6 && Math.hypot(b.vx, b.vy) < 0.45) {
       b.vx = 0;
       b.vy = 0;
+    }
+  }
+  // ---- sticky goo ----------------------------------------------------------------
+  // With the Sticky goo upgrade on, an exploding sticky grenade throws blobs of
+  // goo in random directions. Each flies until it touches a surface, then sticks
+  // there for 5 seconds; any other weapon that touches a stuck blob sticks to it.
+  const GOO_LIFE = 5,
+    GOO_R = 10;
+  let goo = [];
+  M.gooActive = () =>
+    (S.skills.stickyGoo || 0) > 0 &&
+    !(S.settings && S.settings.gooOn === false);
+  function gooBlocked(x, y) {
+    if (x < 0 || x >= W() || y >= H()) return true;
+    if (y < 0) return false;
+    if (solidAt(x, y)) return true;
+    for (const o of caches) {
+      if (Math.abs(o.px - x) > o.rx + 3 || Math.abs(o.py - y) > o.ry + 3)
+        continue;
+      for (const q of o.cells) {
+        const dx = q[0] - x,
+          dy = q[1] - y;
+        if (dx * dx + dy * dy <= 5 && !solidAt(q[0], q[1])) return true;
+      }
+    }
+    return false;
+  }
+  function spawnGoo(x, y) {
+    const n = 5 + (S.skills.stickyGoo || 0) * 2;
+    for (let i = 0; i < n && goo.length < 40; i++) {
+      const a = Math.random() * Math.PI * 2,
+        v = 3 + Math.random() * 5;
+      goo.push({
+        x,
+        y,
+        vx: Math.cos(a) * v,
+        vy: Math.sin(a) * v,
+        state: "fly",
+        life: GOO_LIFE,
+        r: GOO_R * (0.85 + Math.random() * 0.3),
+        t: 0,
+      });
+    }
+  }
+  function releaseGoo(g) {
+    for (const b of bombs)
+      if (b.gooBlob === g) {
+        b.gooBlob = null;
+        b.stuck = false; // the goo let go: it falls
+      }
+  }
+  function updateGoo(frames) {
+    for (let i = goo.length - 1; i >= 0; i--) {
+      const g = goo[i];
+      g.t += frames / 60;
+      if (g.state === "fly") {
+        const n = Math.max(1, Math.ceil((Math.hypot(g.vx, g.vy) * frames) / 3)),
+          ds = frames / n;
+        for (let k = 0; k < n; k++) {
+          const px = g.x,
+            py = g.y;
+          g.vy += 0.2 * ds;
+          g.x += g.vx * ds;
+          g.y += g.vy * ds;
+          if (gooBlocked(g.x, g.y)) {
+            g.x = px;
+            g.y = py;
+            g.state = "stuck"; // touched a surface
+            g.vx = g.vy = 0;
+            break;
+          }
+        }
+        if (g.y > H() + 30) goo.splice(i, 1);
+      } else {
+        g.life -= frames / 60;
+        if (g.life <= 0) {
+          releaseGoo(g);
+          goo.splice(i, 1);
+        }
+      }
     }
   }
   function splitDynamite(b, py) {
@@ -1088,6 +1280,7 @@
     const scale = Math.min(3, frames);
     stepGravel(scale / 60);
     settleOre(scale);
+    updateGoo(scale);
     let animate = false;
     for (let i = rings.length - 1; i >= 0; i--) {
       rings[i].r += (rings[i].max || 64) * 0.1 * scale;
@@ -1216,6 +1409,9 @@
     return true;
   };
   M.goal = goal;
+  // true while anything in the mine is still moving (used to pick a safe moment to refresh)
+  M.busy = () =>
+    bombs.length > 0 || loose.length > 0 || oreFalling || goo.length > 0;
   M.groundName = () => GROUND_NAME[S.mineType] || "Dirt";
   M.W = W;
   M.H = H;

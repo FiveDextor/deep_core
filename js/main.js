@@ -10,10 +10,12 @@
   );
   F.init();
   D.Mining.init();
+  D.Perf.init();
   let awayClock = 0,
     saveClock = 0;
   E.start({
     update(real) {
+      D.Perf.update(real);
       if (D.Scenes.current === "factory") {
         // Watching the factory: real-time simulation. A long gap (tab was
         // asleep) is credited in bigger steps instead of dropped.

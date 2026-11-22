@@ -251,10 +251,11 @@
   // ---- particles + floating text -------------------------------------------
   UI.makeFx = () => {
     const parts = [],
-      floats = [];
+      floats = [],
+      cap = () => Math.max(16, Math.round(140 * (E.fxScale ?? 1)));
     return {
       spark(x, y, col) {
-        if (parts.length > 140) return;
+        if (parts.length > cap()) return;
         parts.push({
           x,
           y,
@@ -268,7 +269,7 @@
         });
       },
       puff(x, y) {
-        if (parts.length > 140) return;
+        if (parts.length > cap()) return;
         parts.push({
           x,
           y,
@@ -284,7 +285,7 @@
         });
       },
       burst(x, y, col, n = 8) {
-        for (let i = 0; i < n && parts.length < 140; i++) {
+        for (let i = 0; i < n && parts.length < cap(); i++) {
           const a = Math.random() * 6.28,
             s = 40 + Math.random() * 70;
           parts.push({

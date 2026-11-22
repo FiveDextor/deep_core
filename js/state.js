@@ -118,6 +118,7 @@
     money: 0,
     depth: 0,
     digScore: 0,
+    settings: { quality: "auto", autoRefresh: 30, gooOn: true }, // picture quality (auto/high/medium/low); minutes between self-refreshes (0 = off)
     mineType: "dirt", // the kind of ground this level is made of: dirt, gravel or rock
     banked: 0,
     ore: { coal: 0, copper: 0, iron: 0, gold: 0 },
@@ -137,6 +138,7 @@
       grenadeRadius: 0,
       dynamiteShards: 0,
       stickyRadius: 0,
+      stickyGoo: 0,
       generators: 0,
       assembly: 0,
       buffer: 0,
@@ -199,6 +201,7 @@
           grenadeRadius: 0,
           dynamiteShards: 0,
           stickyRadius: 0,
+          stickyGoo: 0,
           generators: 0,
           assembly: 0,
           buffer: 0,
