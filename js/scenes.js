@@ -321,7 +321,7 @@
           g,
           "w" + k,
           x + 12,
-          104 + i * 52,
+          104 + i * 48,
           w - 24 - (gooRow ? 78 : 0),
           46,
           wp.name,
@@ -343,7 +343,7 @@
             g,
             "gooToggle",
             x + w - 12 - 72,
-            104 + i * 52,
+            104 + i * 48,
             72,
             46,
             "Goo",
@@ -359,9 +359,9 @@
           S.settings.gooOn = !on;
       }
     });
-    E.text(g, "ORE CARGO", x + 16, 324, { size: 12, weight: 800, color: DIM });
+    E.text(g, "ORE CARGO", x + 16, 352, { size: 12, weight: 800, color: DIM });
     D.ores.forEach((o, i) => {
-      const y = 346 + i * 26;
+      const y = 372 + i * 22;
       g.fillStyle = o.color;
       g.beginPath();
       g.arc(x + 24, y, 6, 0, 6.29);
@@ -392,19 +392,19 @@
         M.groundName().toUpperCase() +
         " GROUND",
       x + 16,
-      462,
+      476,
       {
         size: 12,
         weight: 800,
         color: DIM,
       },
     );
-    UI.bar(g, x + 16, 474, w - 32, 12, S.digScore / goal);
+    UI.bar(g, x + 16, 488, w - 32, 10, S.digScore / goal);
     E.text(
       g,
       Math.floor(S.digScore) + " / " + goal + " ground cleared for next level",
       x + 16,
-      500,
+      512,
       { size: 11.5, weight: 500, color: DIM, maxW: w - 32 },
     );
     if (
@@ -412,16 +412,16 @@
         g,
         "advance",
         x + 12,
-        516,
+        524,
         w - 24,
-        34,
+        32,
         "Descend to next level",
         { disabled: S.digScore < goal, fill: "#2b4a2f" },
       )
     )
       M.advance();
     if (
-      UI.button(g, "resetMine", x + 12, 556, w - 24, 30, "Reset mining zone", {
+      UI.button(g, "resetMine", x + 12, 560, w - 24, 28, "Reset mining zone", {
         size: 13,
         tip: "Rebuild this level. Your ore cargo and factory are safe.",
       })
@@ -438,7 +438,7 @@
     );
     E.text(
       g,
-      "Bombs explode 3 s after first impact (dynamite 5 s). Sticky grenades stay put until what holds them is gone.",
+      "Bombs explode 3 s after first impact (dynamite 5 s). Acid grenades leave acid that eats down through the ground. Sticky grenades stay put until what holds them is gone.",
       WX,
       634,
       { size: 13, weight: 500, color: "#7f9a93", maxW: 900 },
@@ -489,9 +489,16 @@
     ctor: ["#40291f", "#e08a4a"],
     deposit: ["#1c3045", "#5aa5e0"],
     seller: ["#3c3320", "#e0bf55"],
+    comb: ["#2a2a47", "#8f8ff0"],
   };
   const catOf = (t) =>
-    t.endsWith("Gen") ? "gen" : t.endsWith("Ctor") ? "ctor" : t;
+    t.endsWith("Gen")
+      ? "gen"
+      : t.endsWith("Ctor")
+        ? "ctor"
+        : t === "combinator"
+          ? "comb"
+          : t;
   const slotAnim = new Map(), // "fi_si" -> {emit, receive} seconds left
     sparkAcc = new Map(),
     rowFx = [],
@@ -571,7 +578,11 @@
           ? "#9bd6e5"
           : p.kind === "fuel"
             ? "#ff9a4d"
-            : "#9be8a5";
+            : p.kind === "sand"
+              ? "#e9d58b"
+              : p.kind === "glass"
+                ? "#aef0f7"
+                : "#9be8a5";
       E.rr(g, -11, -9, 22, 18, 5);
       g.fillStyle = col;
       g.fill();
@@ -697,7 +708,13 @@
         });
       } else {
         UI.bar(g, x + 3, 18, w - 6, 7, info.progress, {
-          color: info.noInput ? "#a65246" : info.full ? "#c9a24a" : "#6fe0b0",
+          color: info.noInput
+            ? "#a65246"
+            : info.full
+              ? "#c9a24a"
+              : info.gasBar
+                ? "#b6f26b"
+                : "#6fe0b0",
         });
         if (info.text)
           E.text(g, info.text, cx, 35, {
@@ -706,6 +723,34 @@
             color: info.noInput ? "#e08a7c" : "#b8d4ca",
             align: "center",
           });
+      }
+    }
+    // gas machines: a gauge on the side, and wisps of gas being pulled in
+    if (info && info.gas != null) {
+      const gx = x + w - 11,
+        gy = y + 10,
+        gh = 40;
+      E.rr(g, gx, gy, 6, gh, 3);
+      g.fillStyle = "rgba(0,0,0,.45)";
+      g.fill();
+      if (info.gas > 0.02) {
+        E.rr(g, gx, gy + gh * (1 - info.gas), 6, gh * info.gas, 3);
+        g.fillStyle = "#b6f26b";
+        g.fill();
+      }
+      if (info.sucking && !E.reduced) {
+        const acc = (sparkAcc.get(key + "g") || 0) + E.dt;
+        if (acc > 0.11) {
+          const a = Math.random() * 6.28,
+            d = 46 + Math.random() * 22;
+          fxFor(fi).wisp(
+            cx + Math.cos(a) * d,
+            cy + Math.sin(a) * d * 0.8,
+            cx,
+            cy - 4,
+          );
+          sparkAcc.set(key + "g", 0);
+        } else sparkAcc.set(key + "g", acc);
       }
     }
     // sparks + steam while a constructor works
@@ -855,7 +900,19 @@
       weight: 800,
       color: DIM,
     });
-    Object.keys(D.parts).forEach((k, i) => {
+    const partKeys = Object.keys(D.parts),
+      partsY = 98,
+      partsH = 384,
+      scrolled = UI.scrollBegin(
+        g,
+        "parts",
+        x + 4,
+        partsY,
+        w - 8,
+        partsH,
+        8 + partKeys.length * 42,
+      );
+    partKeys.forEach((k, i) => {
       const p = D.parts[k],
         stored = S.partInventory[k] || 0,
         afford = stored > 0 || H.canPay(p.cost);
@@ -876,6 +933,22 @@
       )
         F.selectPart(k);
     });
+    UI.scrollEnd(g);
+    {
+      // scroll indicator
+      const total = 8 + partKeys.length * 42,
+        track = partsH - 8;
+      if (total > partsH) {
+        E.rr(g, x + w - 7, partsY + 4, 3, track, 1.5);
+        g.fillStyle = "rgba(255,255,255,.08)";
+        g.fill();
+        const th = Math.max(24, (track * partsH) / total),
+          ty = partsY + 4 + ((track - th) * scrolled) / (total - partsH);
+        E.rr(g, x + w - 7, ty, 3, th, 1.5);
+        g.fillStyle = "rgba(255,255,255,.35)";
+        g.fill();
+      }
+    }
     E.text(g, "SEND FINISHED WEAPONS TO", x + 16, 494, {
       size: 11,
       weight: 800,
@@ -1022,22 +1095,26 @@
     storage: "🏬",
     sellerSpeed: "⏱",
     sellerValue: "💰",
+    acidDuration: "☣️",
+    gasIntake: "💨",
   };
   const POS = {
-    core: [0, 4.2],
-    blast: [1, 1.5],
+    core: [0, 5.2],
+    blast: [1, 2],
     grenadeRadius: [2, 0],
     dynamiteShards: [2, 1],
     oreYield: [2, 2],
     throwForce: [2, 3],
+    acidDuration: [2, 4],
     stickyRadius: [3, 0],
     stickyGoo: [4, 0],
-    generators: [1, 5],
-    assembly: [2, 4.5],
-    buffer: [2, 5.5],
-    storage: [1, 7],
-    sellerSpeed: [2, 6.5],
-    sellerValue: [2, 7.5],
+    generators: [1, 6.5],
+    assembly: [2, 6],
+    buffer: [2, 7],
+    gasIntake: [3, 6],
+    storage: [1, 9],
+    sellerSpeed: [2, 8.5],
+    sellerValue: [2, 9.5],
   };
   let selUp = "blast";
   const nodeXY = (id) => [
@@ -1084,7 +1161,7 @@
       TREE.y,
       TREE.w,
       TREE.h - 2,
-      18 + 7.5 * ROW_UP + NODE_H + 24,
+      18 + 9.5 * ROW_UP + NODE_H + 24,
     );
     // links first, so the cards sit on top of them
     for (const u of ups) {

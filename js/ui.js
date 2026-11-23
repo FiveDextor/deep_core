@@ -284,6 +284,24 @@
           soft: true,
         });
       },
+      // a soft puff drifting toward (tx, ty) and shrinking: gas being sucked in
+      wisp(x, y, tx, ty) {
+        if (parts.length > cap()) return;
+        const life = 0.75;
+        parts.push({
+          x,
+          y,
+          vx: (tx - x) / life,
+          vy: (ty - y) / life,
+          t: 0,
+          life,
+          c: "rgba(190,255,120,",
+          r: 4.5,
+          grow: -4,
+          soft: true,
+          g: 0,
+        });
+      },
       burst(x, y, col, n = 8) {
         for (let i = 0; i < n && parts.length < cap(); i++) {
           const a = Math.random() * 6.28,

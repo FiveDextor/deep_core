@@ -527,6 +527,7 @@
     h0 = H();
     bombs = [];
     goo = [];
+    acids = [];
     terrainDirty = true;
     buildGrid();
     makeCaches();
@@ -809,6 +810,38 @@
       if (shake < 0.3) shake = 0;
     }
     ctx.drawImage(terrain, 0, 0, w, h);
+    for (const a of acids) {
+      const fade = Math.min(1, a.life / 0.6),
+        pulse = 1 + 0.06 * Math.sin(a.t * 10),
+        r = a.r * pulse;
+      ctx.globalAlpha = 0.9 * fade;
+      const grad = ctx.createRadialGradient(a.x, a.y, 1, a.x, a.y, r * 1.5);
+      grad.addColorStop(0, "#f4ff6a");
+      grad.addColorStop(0.55, "#a6e021");
+      grad.addColorStop(1, "rgba(120,200,20,0)");
+      ctx.fillStyle = grad;
+      ctx.beginPath();
+      ctx.arc(a.x, a.y, r * 1.5, 0, 6.29);
+      ctx.fill();
+      ctx.fillStyle = "#c7f23a";
+      ctx.beginPath();
+      ctx.arc(a.x, a.y, r * 0.85, 0, 6.29);
+      ctx.fill();
+      ctx.strokeStyle = "#6ea50f";
+      ctx.lineWidth = 2;
+      ctx.stroke();
+      // bubbles
+      ctx.fillStyle = "#f1ffa3";
+      for (let k = 0; k < 4; k++) {
+        const ph = a.t * 3 + k * 1.7,
+          bx = a.x + Math.cos(ph * 1.3 + k) * r * 0.55,
+          by = a.y - ((ph * 9) % (r * 1.2)) + r * 0.4;
+        ctx.beginPath();
+        ctx.arc(bx, by, 1.6 + (k % 2), 0, 6.29);
+        ctx.fill();
+      }
+      ctx.globalAlpha = 1;
+    }
     for (const g of goo) {
       const stuck = g.state === "stuck" || g.big,
         fade = stuck ? Math.min(1, g.life) : 1,
@@ -844,6 +877,21 @@
         ctx.fill();
         ctx.fillStyle = "#78d99c";
         ctx.fillRect(-2, 7, 4, 4);
+      } else if (b.weapon === "acid") {
+        ctx.fillStyle = "#cfe9f0"; // glass flask
+        ctx.beginPath();
+        ctx.arc(0, 1, 8, 0, 6.29);
+        ctx.fill();
+        ctx.fillStyle = "#b3e82f"; // acid inside
+        ctx.beginPath();
+        ctx.arc(0, 2.5, 6, 0, 6.29);
+        ctx.fill();
+        ctx.fillStyle = "#e9f7fb";
+        ctx.fillRect(-2.5, -11, 5, 5);
+        ctx.fillStyle = "#fff";
+        ctx.beginPath();
+        ctx.arc(-3, -1, 1.8, 0, 6.29);
+        ctx.fill();
       } else if (b.weapon === "dynamite") {
         ctx.lineCap = "round";
         ctx.strokeStyle = "#6f241f";
@@ -1030,9 +1078,11 @@
         (S.selectedWeapon === "sticky"
           ? " thrown. It sticks wherever it lands, then explodes after 3 seconds" +
             (M.gooActive() ? " and bursts into goo." : ".")
-          : " thrown. It explodes " +
-            fuseTime +
-            " seconds after first impact."),
+          : S.selectedWeapon === "acid"
+            ? " thrown. 3 seconds after first impact it spills acid that eats down through the ground."
+            : " thrown. It explodes " +
+              fuseTime +
+              " seconds after first impact."),
     );
     scheduleFrame();
     updateUI();
@@ -1213,6 +1263,110 @@
       b.vy = 0;
     }
   }
+  // ---- acid ------------------------------------------------------------------------
+  // An acid grenade does not explode. It leaves a pool of acid that eats down
+  // through the ground (dirt and gravel quickly, rock slowly, bedrock never) and
+  // wears off after a few seconds; the Acid duration upgrade makes it last longer.
+  let acids = [];
+  const acidLife = () => 3 + (S.skills.acidDuration || 0) * 0.6;
+  const matAt = (x, y) => {
+    x = Math.floor(x);
+    y = Math.floor(y);
+    if (x < 0 || x >= GW || y < 0) return 0;
+    return y >= GH ? BEDROCK : grid[y * GW + x];
+  };
+  // Dissolve the ore this acid touches, the same way a blast would (but gently).
+  function cutOre(cx, cy, rad) {
+    for (const o of caches) {
+      const effective = rad / o.hardness;
+      if (
+        !o.cells.length ||
+        Math.abs(o.px - cx) > effective + o.rx ||
+        Math.abs(o.py - cy) > effective + o.ry
+      )
+        continue;
+      let removed = 0;
+      for (let i = o.cells.length - 1; i >= 0; i--) {
+        const q = o.cells[i];
+        if (Math.hypot(q[0] - cx, q[1] - cy) <= effective) {
+          o.cells.splice(i, 1);
+          removed++;
+        }
+      }
+      if (removed) {
+        o.cuts.push({ px: cx, py: cy, r: effective });
+        o.progress += (removed / 20) * (1 + S.skills.oreYield * 0.12);
+        const amount = Math.floor(o.progress);
+        S.ore[o.type] += amount;
+        o.progress -= amount;
+        if (o.cells.length < MIN_ORE_CELLS) {
+          o.cells.length = 0;
+          o.cuts.length = 0;
+          o.progress = 0;
+        }
+      }
+    }
+    caches = caches.filter((o) => o.cells.length >= MIN_ORE_CELLS);
+    for (const k of bombs)
+      if (k.stuckOre && !caches.includes(k.stuckOre)) {
+        k.stuckOre = null;
+        k.stuck = false;
+      }
+    terrainDirty = true;
+  }
+  function spawnAcid(x, y) {
+    const life = acidLife();
+    acids.push({
+      x,
+      y,
+      vy: 0,
+      life,
+      total: life,
+      r: D.weapons.acid.radius / (1 + S.depth * 0.14),
+      t: 0,
+      acc: 0,
+      oreT: 0,
+    });
+    window.DeepworksUI.note(
+      "Acid grenade! The acid eats down through the ground for " +
+        life.toFixed(1) +
+        " seconds.",
+    );
+  }
+  function updateAcids(frames) {
+    const dt = frames / 60;
+    for (let i = acids.length - 1; i >= 0; i--) {
+      const a = acids[i];
+      a.t += dt;
+      a.life -= dt;
+      if (a.life <= 0) {
+        acids.splice(i, 1);
+        continue;
+      }
+      if (matAt(a.x, a.y + a.r + 2) === 0) {
+        // nothing under it: it falls like a liquid until it reaches something
+        a.vy = Math.min(9, a.vy + 0.3 * frames);
+        a.y += a.vy * frames;
+        if (a.y > H() + 30) acids.splice(i, 1);
+        continue;
+      }
+      a.vy = 0;
+      a.acc += frames;
+      a.oreT += dt;
+      if (a.acc >= 3) {
+        const below = matAt(a.x, a.y + a.r + 2),
+          speed = below === BEDROCK ? 0 : below === ROCK ? 9 : 22, // px per second
+          step = speed * (a.acc / 60);
+        a.acc = 0;
+        S.digScore += carve(a.x, a.y, a.r) / 12;
+        a.y += step; // the pool sinks as the ground goes
+      }
+      if (a.oreT >= 0.2) {
+        a.oreT = 0;
+        cutOre(a.x, a.y, a.r);
+      }
+    }
+  }
   // ---- sticky goo ----------------------------------------------------------------
   // With the Sticky goo upgrade on, an exploding sticky grenade throws blobs of
   // goo in random directions. Each flies until it touches a surface, then sticks
@@ -1347,6 +1501,7 @@
     stepGravel(scale / 60);
     settleOre(scale);
     updateGoo(scale);
+    updateAcids(scale);
     let animate = false;
     for (let i = rings.length - 1; i >= 0; i--) {
       rings[i].r += (rings[i].max || 64) * 0.1 * scale;
@@ -1369,6 +1524,7 @@
           if (b.fuse <= 0) {
             // explode where the bomb actually is
             if (b.weapon === "dynamite") splitDynamite(b, b.py);
+            else if (b.weapon === "acid") spawnAcid(b.px, b.py);
             else blast(b, b.py);
             bombs.splice(i, 1);
           }
@@ -1477,7 +1633,11 @@
   M.goal = goal;
   // true while anything in the mine is still moving (used to pick a safe moment to refresh)
   M.busy = () =>
-    bombs.length > 0 || loose.length > 0 || oreFalling || goo.length > 0;
+    acids.length > 0 ||
+    bombs.length > 0 ||
+    loose.length > 0 ||
+    oreFalling ||
+    goo.length > 0;
   M.groundName = () => GROUND_NAME[S.mineType] || "Dirt";
   M.W = W;
   M.H = H;

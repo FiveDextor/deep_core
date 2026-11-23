@@ -51,6 +51,23 @@
       price: 18,
       recipe: { grenade: 1, glue: 1, seconds: 6 },
     },
+    // No explosion: it leaves acid that eats down through the ground for a few
+    // seconds. "gas" is not carried by the conveyor: the constructor sucks it up itself.
+    acid: {
+      name: "Acid grenade",
+      icon: "☣️",
+      radius: 15, // size of the acid pool
+      price: 34,
+      recipe: { glass: 1, gas: 2, seconds: 7 },
+    },
+  };
+  // Materials made by a combinator (they travel on the conveyor like iron or fuel).
+  D.materials = {
+    glass: {
+      name: "Glass",
+      icon: "🔷",
+      recipe: { sand: 1, fuel: 1, seconds: 3 },
+    },
   };
   D.parts = {
     ironGen: {
@@ -64,6 +81,12 @@
       icon: "🔥",
       cost: { coal: 5, copper: 1 },
       detail: "Makes fuel · 0.65/s",
+    },
+    sandGen: {
+      name: "Sand generator",
+      icon: "⏳",
+      cost: { coal: 4, copper: 2 },
+      detail: "Makes sand · 0.33/s",
     },
     glueGen: {
       name: "Glue generator",
@@ -95,6 +118,19 @@
       cost: { iron: 5, copper: 5, gold: 1 },
       detail: "Regular grenade + glue → sticky grenade",
     },
+    combinator: {
+      name: "Material combinator",
+      icon: "⚗️",
+      cost: { iron: 4, copper: 3 },
+      detail: "Combines materials: sand + fuel → glass",
+    },
+    acidCtor: {
+      name: "Acid grenade constructor",
+      icon: "☣️",
+      cost: { iron: 6, copper: 4, gold: 1 },
+      detail:
+        "Glass → acid grenades. It sucks up the 2 gas each grenade needs by itself, 0.5 gas/s (Gas intake upgrade makes it faster).",
+    },
     deposit: {
       name: "Weapon deposit",
       icon: "📦",
@@ -113,6 +149,8 @@
     dynamiteCtor: "dynamite",
     chargeCtor: "charge",
     stickyCtor: "sticky",
+    acidCtor: "acid",
+    combinator: "glass",
   };
   D.state = {
     money: 0,
@@ -123,7 +161,7 @@
     banked: 0,
     ore: { coal: 0, copper: 0, iron: 0, gold: 0 },
     resources: { iron: 0, fuel: 0 },
-    stock: { grenade: 0, dynamite: 0, charge: 0, sticky: 0 },
+    stock: { grenade: 0, dynamite: 0, charge: 0, sticky: 0, acid: 0 },
     selectedWeapon: "grenade",
     selectedPart: null,
     selectedFloor: 0,
@@ -139,6 +177,8 @@
       dynamiteShards: 0,
       stickyRadius: 0,
       stickyGoo: 0,
+      acidDuration: 0,
+      gasIntake: 0,
       generators: 0,
       assembly: 0,
       buffer: 0,
@@ -187,7 +227,7 @@
         D.mineSave = d.mine || null;
       }
       D.state.stock = Object.assign(
-        { grenade: 0, dynamite: 0, charge: 0, sticky: 0 },
+        { grenade: 0, dynamite: 0, charge: 0, sticky: 0, acid: 0 },
         D.state.stock || {},
       );
       D.state.partInventory = D.state.partInventory || {};
@@ -202,6 +242,8 @@
           dynamiteShards: 0,
           stickyRadius: 0,
           stickyGoo: 0,
+          acidDuration: 0,
+          gasIntake: 0,
           generators: 0,
           assembly: 0,
           buffer: 0,

@@ -51,6 +51,15 @@
       requires: { id: "stickyRadius", level: 2 },
     },
     {
+      id: "acidDuration",
+      branch: "Mining",
+      name: "Acid duration",
+      detail:
+        "Acid grenades leave acid that eats through the ground for longer. +0.6 seconds per level (3 seconds at level 0).",
+      base: 110,
+      requires: { id: "blast", level: 3 },
+    },
+    {
       id: "oreYield",
       branch: "Mining",
       name: "Ore recovery",
@@ -81,6 +90,15 @@
       detail: "Build weapons faster.",
       base: 75,
       requires: { id: "generators", level: 2 },
+    },
+    {
+      id: "gasIntake",
+      branch: "Factory",
+      name: "Gas intake",
+      detail:
+        "Acid grenade constructors suck up gas faster: +25% per level (0.5 gas per second at level 0).",
+      base: 90,
+      requires: { id: "assembly", level: 2 },
     },
     {
       id: "buffer",
@@ -115,6 +133,8 @@
       requires: { id: "storage", level: 2 },
     },
   ];
+  const emptySell = () =>
+    Object.fromEntries(Object.keys(D.weapons).map((k) => [k, 0]));
   function type(s) {
     return s && s.type;
   }
@@ -146,20 +166,30 @@
     for (const [k, v] of Object.entries(c || {})) S.ore[k] -= v;
     return true;
   }
-  const INPUT_CAP = 5;
+  const INPUT_CAP = 5,
+    GAS_CAP = 4; // an acid constructor can hold 4 gas (two grenades' worth)
+  const recipeOf = (p) => (D.weapons[p] || D.materials[p]).recipe;
+  const isMaterial = (p) => !!D.materials[p];
+  // What a machine needs delivered by the conveyor ("gas" is sucked up by the machine itself).
   function inputsFor(product) {
-    return Object.entries(D.weapons[product].recipe).filter(
-      ([k]) => k !== "seconds",
+    return Object.entries(recipeOf(product)).filter(
+      ([k]) => k !== "seconds" && k !== "gas",
     );
   }
+  const gasNeed = (product) => recipeOf(product).gas || 0;
+  const gasRate = () => 0.5 * (1 + (S.skills.gasIntake || 0) * 0.25); // units per second
+  const GEN_PERIOD = { iron: 3.2, fuel: 1.75, sand: 3, glue: 4.2 },
+    GEN_NAME = { iron: "Fe", fuel: "Fuel", sand: "Sand", glue: "Glue" };
   function genKind(t) {
     return t === "ironGen"
       ? "iron"
       : t === "fuelGen"
         ? "fuel"
-        : t === "glueGen"
-          ? "glue"
-          : null;
+        : t === "sandGen"
+          ? "sand"
+          : t === "glueGen"
+            ? "glue"
+            : null;
   }
   function beltPath(f, a, b) {
     return (
@@ -207,7 +237,8 @@
   }
   function outputTarget(f, i, product) {
     let input = consumerTarget(f, i, product);
-    return input >= 0 ? input : outletIndex(f, i, "weapon");
+    if (input >= 0 || isMaterial(product)) return input; // a material only ever feeds another machine
+    return outletIndex(f, i, "weapon");
   }
   function genTarget(f, gi, kind) {
     for (let j = gi + 1; j < f.slots.length; j++) {
@@ -232,6 +263,8 @@
     if (p.kind === "iron") return "Fe";
     if (p.kind === "fuel") return "F";
     if (p.kind === "glue") return "GL";
+    if (p.kind === "sand") return "Sd";
+    if (p.kind === "glass") return "Gl";
     return D.weapons[p.kind === "weapon" ? p.product : p.kind]?.icon || "?";
   }
   // Plain data for a machine's readout: {label, progress, text, sub, noInput}
@@ -239,16 +272,12 @@
     const show = S.showTimerText !== false;
     if (genKind(t)) {
       const kind = genKind(t),
-        period = kind === "iron" ? 3.2 : kind === "fuel" ? 1.75 : 4.2,
+        period = GEN_PERIOD[kind],
         rate = 1 + S.skills.generators * 0.22,
         stored = m.genStock || 0,
         full = stored >= genBuffer();
       return {
-        label:
-          "STOCK " +
-          stored +
-          " · " +
-          (kind === "iron" ? "Fe" : kind === "fuel" ? "Fuel" : "Glue"),
+        label: "STOCK " + stored + " · " + GEN_NAME[kind],
         progress: full ? 1 : Math.min(1, (m.genClock || 0) / period),
         text: show
           ? full
@@ -264,38 +293,45 @@
         inputs = m.inputs || {},
         ready = req.every(([k, n]) => (inputs[k] || 0) >= n),
         name = (k) =>
-          k === "iron"
-            ? "Fe"
-            : k === "fuel"
-              ? "Fuel"
-              : k === "glue"
-                ? "Glue"
-                : D.weapons[k]?.icon || k,
-        speed = 1 + S.skills.assembly * 0.3;
+          GEN_NAME[k] || (k === "glass" ? "Glass" : D.weapons[k]?.icon || k),
+        speed = 1 + S.skills.assembly * 0.3,
+        gas = gasNeed(product),
+        haveGas = m.gas || 0,
+        gasReady = haveGas >= gas;
+      const parts = req.map(
+        ([k, n]) => name(k) + " " + (inputs[k] || 0) + "/" + n,
+      );
+      if (gas)
+        parts.push("Gas " + Math.min(haveGas, GAS_CAP).toFixed(1) + "/" + gas);
+      const waiting = !ready || !gasReady;
       return {
-        label: req
-          .map(([k, n]) => name(k) + " " + (inputs[k] || 0) + "/" + n)
-          .join(" · "),
-        progress: m.working ? Math.min(1, (m.work || 0) / 1.15) : 0,
+        label: parts.join(" · "),
+        // while it waits for gas the bar shows the gas filling up
+        progress: m.working
+          ? Math.min(1, (m.work || 0) / 1.15)
+          : ready && gas
+            ? Math.min(1, haveGas / gas)
+            : 0,
+        gasBar: !m.working && ready && !!gas && !gasReady,
         text:
           !ready && !m.working
             ? "NO INPUT"
-            : show
-              ? Math.max(
-                  0,
-                  m.working ? (1.15 - (m.work || 0)) / speed : 1.15 / speed,
-                ).toFixed(1) + "s"
-              : "",
+            : !m.working && !gasReady
+              ? "SUCKING GAS"
+              : show
+                ? Math.max(
+                    0,
+                    m.working ? (1.15 - (m.work || 0)) / speed : 1.15 / speed,
+                  ).toFixed(1) + "s"
+                : "",
         noInput: !ready && !m.working,
+        gas: gas ? Math.min(1, haveGas / GAS_CAP) : null,
+        sucking: !!gas && !!m.sucking,
+        waiting,
       };
     }
     if (t === "seller") {
-      m.sellStock = m.sellStock || {
-        grenade: 0,
-        dynamite: 0,
-        charge: 0,
-        sticky: 0,
-      };
+      m.sellStock = m.sellStock || emptySell();
       const total = Object.values(m.sellStock).reduce((x, y) => x + y, 0),
         period = sellerPeriod();
       return {
@@ -312,11 +348,15 @@
         sub: Object.entries(S.stock)
           .map(
             ([k, n]) =>
-              ({ grenade: "G", dynamite: "D", charge: "C", sticky: "ST" })[k] +
-              " " +
-              n,
+              ({
+                grenade: "G",
+                dynamite: "D",
+                charge: "C",
+                sticky: "ST",
+                acid: "A",
+              })[k] + n,
           )
-          .join(" · "),
+          .join(" "),
         text: "CAP " + cap() + " EACH",
       };
     }
@@ -384,7 +424,7 @@
           continue;
         }
         let rate = 1 + S.skills.generators * 0.22,
-          period = kind === "iron" ? 3.2 : kind === "fuel" ? 1.75 : 4.2;
+          period = GEN_PERIOD[kind];
         m.genClock = (m.genClock || 0) + dt * rate;
         while (m.genClock >= period && m.genStock < genBuffer()) {
           m.genClock -= period;
@@ -500,12 +540,7 @@
           } else {
             let seller = f.slots[p.target];
             if (seller) {
-              seller.sellStock = seller.sellStock || {
-                grenade: 0,
-                dynamite: 0,
-                charge: 0,
-                sticky: 0,
-              };
+              seller.sellStock = seller.sellStock || emptySell();
               fx(p.fi, p.target, "receive");
               seller.sellStock[p.product] =
                 (seller.sellStock[p.product] || 0) + 1;
@@ -524,11 +559,17 @@
         let m = f.slots[i],
           product = D.productFor[type(m)];
         if (!product) continue;
+        // machines that need gas suck it up by themselves, whether or not they are busy
+        const gas = gasNeed(product);
+        if (gas) {
+          m.gas = Math.min(GAS_CAP, (m.gas || 0) + dt * gasRate());
+          m.sucking = m.gas < GAS_CAP;
+        }
         let req = inputsFor(product);
         if (!req.every(([k]) => inputPath(f, i, k))) continue;
         if (
           consumerTarget(f, i, product) < 0 &&
-          outletIndex(f, i, "weapon") < 0
+          (isMaterial(product) || outletIndex(f, i, "weapon") < 0)
         )
           continue;
         m.inputs = m.inputs || {};
@@ -541,7 +582,7 @@
             if (target >= 0) {
               newPacket(fi, product, i * PITCH + BAY - 2, target, product);
               fx(fi, i, "emit");
-            } else {
+            } else if (!isMaterial(product)) {
               let out = outletIndex(f, i, "weapon");
               if (out >= 0) {
                 newPacket(fi, "weapon", i * PITCH + BAY - 2, out, product);
@@ -551,8 +592,12 @@
           }
           continue;
         }
-        if (req.every(([k, n]) => (m.inputs[k] || 0) >= n)) {
+        if (
+          req.every(([k, n]) => (m.inputs[k] || 0) >= n) &&
+          (m.gas || 0) >= gas
+        ) {
           for (const [k, n] of req) m.inputs[k] -= n;
+          if (gas) m.gas -= gas;
           m.working = true;
           m.work = 0;
         }
@@ -564,12 +609,7 @@
       for (let si = 0; si < S.floors[fi].slots.length; si++) {
         const m = S.floors[fi].slots[si];
         if (type(m) !== "seller") continue;
-        m.sellStock = m.sellStock || {
-          grenade: 0,
-          dynamite: 0,
-          charge: 0,
-          sticky: 0,
-        };
+        m.sellStock = m.sellStock || emptySell();
         m.sellClock = (m.sellClock || 0) + dt;
         while (m.sellClock >= sellerPeriod()) {
           m.sellClock -= sellerPeriod();
@@ -654,6 +694,8 @@
     PITCH,
     SPEED,
     INPUT_CAP,
+    GAS_CAP,
+    gasRate,
   };
   F.selectPart = (k) => {
     S.selectedPart = S.selectedPart === k ? null : k;
