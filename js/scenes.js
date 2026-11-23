@@ -438,7 +438,7 @@
     );
     E.text(
       g,
-      "Bombs explode 3 s after first impact (dynamite 5 s). Sticky grenades stay where they land.",
+      "Bombs explode 3 s after first impact (dynamite 5 s). Sticky grenades stay put until what holds them is gone.",
       WX,
       634,
       { size: 13, weight: 500, color: "#7f9a93", maxW: 900 },

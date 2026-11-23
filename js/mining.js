@@ -722,6 +722,7 @@
   function shiftOre(o, dy) {
     o.py += dy;
     for (const b of bombs) if (b.stuckOre === o) b.py += dy; // a sticky grenade follows its ore
+    for (const g of goo) if (g.ore === o && g.state === "stuck") g.y += dy; // and so does goo
     for (const v of o.verts) v[1] += dy;
     for (const q of o.cells) q[1] += dy;
     for (const c of o.cuts) c.py += dy;
@@ -809,7 +810,7 @@
     }
     ctx.drawImage(terrain, 0, 0, w, h);
     for (const g of goo) {
-      const stuck = g.state === "stuck",
+      const stuck = g.state === "stuck" || g.big,
         fade = stuck ? Math.min(1, g.life) : 1,
         r = stuck
           ? g.r * (0.6 + 0.4 * fade) * (0.94 + 0.06 * Math.sin(g.t * 9))
@@ -1111,8 +1112,46 @@
     b.py += ny * (BOMB_R - minD + 0.05);
     return { nx, ny };
   }
+  // Is there still a surface within reach of a stuck bomb?
+  function nearSurface(x, y, r) {
+    for (let k = 0; k < 16; k++) {
+      const a = (k * Math.PI) / 8,
+        px = x + Math.cos(a) * r,
+        py = y + Math.sin(a) * r;
+      if (px < 0 || px >= W() || py >= H()) return true; // world wall / floor
+      if (py >= 0 && solidAt(px, py)) return true;
+    }
+    for (const o of caches) {
+      if (
+        Math.abs(o.px - x) > o.rx + r + 2 ||
+        Math.abs(o.py - y) > o.ry + r + 2
+      )
+        continue;
+      for (const q of o.cells) {
+        const dx = q[0] - x,
+          dy = q[1] - y;
+        if (dx * dx + dy * dy <= r * r && !solidAt(q[0], q[1])) return true;
+      }
+    }
+    return false;
+  }
+  function stuckSupported(b) {
+    if (b.gooBlob)
+      return goo.includes(b.gooBlob) && b.gooBlob.state === "stuck";
+    if (b.stuckOre) return caches.includes(b.stuckOre);
+    return nearSurface(b.px, b.py, BOMB_R + 2);
+  }
   function stepBomb(b, ds) {
-    if (b.stuck) return; // a stuck bomb never moves again (until its goo wears off or its ore is gone)
+    if (b.stuck) {
+      // Stuck bombs hold until what they are stuck to is gone, then fall normally.
+      b.sup = (b.sup || 0) + ds;
+      if (b.sup < 2) return; // look about every 2 frames
+      b.sup = 0;
+      if (stuckSupported(b)) return;
+      b.stuck = false;
+      b.stuckOre = null;
+      b.gooBlob = null;
+    }
     for (const g of goo) {
       if (g.state !== "stuck") continue;
       const dx = b.px - g.x,
@@ -1184,9 +1223,10 @@
   M.gooActive = () =>
     (S.skills.stickyGoo || 0) > 0 &&
     !(S.settings && S.settings.gooOn === false);
-  function gooBlocked(x, y) {
+  // What is at this point: null = free air, true = ground or a wall, or the ore chunk touched.
+  function gooHit(x, y) {
     if (x < 0 || x >= W() || y >= H()) return true;
-    if (y < 0) return false;
+    if (y < 0) return null;
     if (solidAt(x, y)) return true;
     for (const o of caches) {
       if (Math.abs(o.px - x) > o.rx + 3 || Math.abs(o.py - y) > o.ry + 3)
@@ -1194,8 +1234,19 @@
       for (const q of o.cells) {
         const dx = q[0] - x,
           dy = q[1] - y;
-        if (dx * dx + dy * dy <= 5 && !solidAt(q[0], q[1])) return true;
+        if (dx * dx + dy * dy <= 5 && !solidAt(q[0], q[1])) return o;
       }
+    }
+    return null;
+  }
+  const gooBlocked = (x, y) => !!gooHit(x, y);
+  // Is anything still holding this landed blob? (If not, it falls like anything else.)
+  function gooSupported(g) {
+    if (g.ore) return caches.includes(g.ore); // it rides along with its ore
+    if (gooBlocked(g.x, g.y)) return true;
+    for (let k = 0; k < 8; k++) {
+      const a = (k * Math.PI) / 4;
+      if (gooBlocked(g.x + Math.cos(a) * 5, g.y + Math.sin(a) * 5)) return true;
     }
     return false;
   }
@@ -1236,11 +1287,15 @@
           g.vy += 0.2 * ds;
           g.x += g.vx * ds;
           g.y += g.vy * ds;
-          if (gooBlocked(g.x, g.y)) {
+          const hit = gooHit(g.x, g.y);
+          if (hit) {
             g.x = px;
             g.y = py;
             g.state = "stuck"; // touched a surface
             g.vx = g.vy = 0;
+            g.big = true;
+            g.ore = hit === true ? null : hit;
+            g.chk = 0;
             break;
           }
         }
@@ -1250,6 +1305,17 @@
         if (g.life <= 0) {
           releaseGoo(g);
           goo.splice(i, 1);
+        } else {
+          g.chk = (g.chk || 0) + frames;
+          if (g.chk >= 3) {
+            g.chk = 0;
+            if (!gooSupported(g)) {
+              g.state = "fly"; // the surface is gone: the blob falls, and what hung on it falls too
+              g.vx = g.vy = 0;
+              g.ore = null;
+              releaseGoo(g);
+            }
+          }
         }
       }
     }
