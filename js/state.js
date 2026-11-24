@@ -56,9 +56,9 @@
     acid: {
       name: "Acid grenade",
       icon: "☣️",
-      radius: 15, // size of the acid pool
+      radius: 10, // size of each blob of acid
       price: 34,
-      recipe: { glass: 1, gas: 2, seconds: 7 },
+      recipe: { glass: 1, acidjuice: 1, gas: 2, seconds: 7 },
     },
   };
   // Materials made by a combinator (they travel on the conveyor like iron or fuel).
@@ -87,6 +87,12 @@
       icon: "⏳",
       cost: { coal: 4, copper: 2 },
       detail: "Makes sand · 0.33/s",
+    },
+    acidGen: {
+      name: "Acid generator",
+      icon: "🧫",
+      cost: { coal: 5, copper: 3, iron: 1 },
+      detail: "Makes acid for acid grenades · 0.28/s",
     },
     glueGen: {
       name: "Glue generator",
@@ -129,7 +135,7 @@
       icon: "☣️",
       cost: { iron: 6, copper: 4, gold: 1 },
       detail:
-        "Glass → acid grenades. It sucks up the 2 gas each grenade needs by itself, 0.5 gas/s (Gas intake upgrade makes it faster).",
+        "Glass + acid → acid grenades. It sucks up the 2 gas each grenade needs by itself, 0.5 gas/s (Gas intake upgrade makes it faster).",
     },
     deposit: {
       name: "Weapon deposit",
@@ -179,6 +185,9 @@
       stickyGoo: 0,
       acidDuration: 0,
       gasIntake: 0,
+      acidCount: 0,
+      goldenGrenade: 0,
+      criticalHit: 0,
       generators: 0,
       assembly: 0,
       buffer: 0,
@@ -244,6 +253,9 @@
           stickyGoo: 0,
           acidDuration: 0,
           gasIntake: 0,
+          acidCount: 0,
+          goldenGrenade: 0,
+          criticalHit: 0,
           generators: 0,
           assembly: 0,
           buffer: 0,

@@ -353,6 +353,14 @@
     }
     return -1;
   }
+  // Level L of Critical explosion: (3 x L)% chance of +(5 + 2 x (L-1))% blast radius.
+  function rollCritical(b) {
+    const lv = S.skills.criticalHit || 0;
+    if (lv < 1 || Math.random() * 100 >= 3 * lv) return 0;
+    const bonus = 5 + 2 * (lv - 1);
+    b.r *= 1 + bonus / 100;
+    return bonus;
+  }
   function stepGravel(dt) {
     if (!loose.length) return;
     gravClock += dt;
@@ -811,9 +819,10 @@
     }
     ctx.drawImage(terrain, 0, 0, w, h);
     for (const a of acids) {
-      const fade = Math.min(1, a.life / 0.6),
+      const flying = a.state === "fly",
+        fade = a.life === null ? 1 : Math.min(1, a.life / 0.6),
         pulse = 1 + 0.06 * Math.sin(a.t * 10),
-        r = a.r * pulse;
+        r = a.r * pulse * (flying ? 0.75 : 1);
       ctx.globalAlpha = 0.9 * fade;
       const grad = ctx.createRadialGradient(a.x, a.y, 1, a.x, a.y, r * 1.5);
       grad.addColorStop(0, "#f4ff6a");
@@ -830,14 +839,13 @@
       ctx.strokeStyle = "#6ea50f";
       ctx.lineWidth = 2;
       ctx.stroke();
-      // bubbles
       ctx.fillStyle = "#f1ffa3";
-      for (let k = 0; k < 4; k++) {
+      for (let k = 0; k < 3; k++) {
         const ph = a.t * 3 + k * 1.7,
-          bx = a.x + Math.cos(ph * 1.3 + k) * r * 0.55,
-          by = a.y - ((ph * 9) % (r * 1.2)) + r * 0.4;
+          bx = a.x + Math.cos(ph * 1.3 + k) * r * 0.5,
+          by = a.y - ((ph * 8) % (r * 1.1)) + r * 0.35;
         ctx.beginPath();
-        ctx.arc(bx, by, 1.6 + (k % 2), 0, 6.29);
+        ctx.arc(bx, by, 1.3 + (k % 2) * 0.8, 0, 6.29);
         ctx.fill();
       }
       ctx.globalAlpha = 1;
@@ -933,7 +941,11 @@
         ctx.fillStyle = "#f7bc63";
         ctx.fillRect(-1, -14, 2, 4);
       } else {
-        ctx.fillStyle = "#172126";
+        if (b.golden) {
+          ctx.shadowColor = "#ffd34a";
+          ctx.shadowBlur = 14;
+        }
+        ctx.fillStyle = b.golden ? "#f4c542" : "#172126";
         ctx.beginPath();
         ctx.ellipse(0, 0, 7, 10, 0, 0, 6.29);
         ctx.fill();
@@ -1060,7 +1072,10 @@
           : S.selectedWeapon === "sticky"
             ? S.skills.stickyRadius * 0.08
             : 0;
-    const fuseTime = S.selectedWeapon === "dynamite" ? 5 : 3;
+    const fuseTime = S.selectedWeapon === "dynamite" ? 5 : 3,
+      goldenPercent =
+        S.selectedWeapon === "grenade" ? S.skills.goldenGrenade || 0 : 0,
+      golden = goldenPercent > 0 && Math.random() * 100 < goldenPercent; // 1% per level
     bombs.push({
       px,
       py,
@@ -1070,11 +1085,16 @@
       fuseStarted: false,
       fuseTime,
       fuse: fuseTime,
-      r: w.radius * (1 + S.skills.blast * 0.1 + specificRadius),
+      r:
+        w.radius *
+        (1 + S.skills.blast * 0.1 + specificRadius) *
+        (golden ? 2 : 1), // golden: +100% blast radius
       weapon: S.selectedWeapon,
+      golden,
     });
     window.DeepworksUI.note(
-      w.name +
+      (golden ? "GOLDEN GRENADE! +100% blast radius. " : "") +
+        w.name +
         (S.selectedWeapon === "sticky"
           ? " thrown. It sticks wherever it lands, then explodes after 3 seconds" +
             (M.gooActive() ? " and bursts into goo." : ".")
@@ -1314,52 +1334,110 @@
       }
     terrainDirty = true;
   }
+  const acidCount = () => 3 + (S.skills.acidCount || 0);
   function spawnAcid(x, y) {
-    const life = acidLife();
-    acids.push({
-      x,
-      y,
-      vy: 0,
-      life,
-      total: life,
-      r: D.weapons.acid.radius / (1 + S.depth * 0.14),
-      t: 0,
-      acc: 0,
-      oreT: 0,
-    });
+    const n = acidCount(),
+      life = acidLife(),
+      r = D.weapons.acid.radius / (1 + S.depth * 0.14);
+    for (let i = 0; i < n && acids.length < 40; i++) {
+      const ang = Math.random() * Math.PI * 2,
+        v = 2.5 + Math.random() * 4.5;
+      acids.push({
+        x,
+        y,
+        vx: Math.cos(ang) * v,
+        vy: Math.sin(ang) * v,
+        state: "fly", // flies until it touches a surface, then burrows
+        life: null, // starts counting down once it has landed
+        total: life,
+        r,
+        t: 0,
+        acc: 0,
+        oreT: 0,
+        hx: 0,
+        hy: 1,
+      });
+    }
     window.DeepworksUI.note(
-      "Acid grenade! The acid eats down through the ground for " +
+      "Acid grenade! " +
+        n +
+        " blobs of acid scatter and burrow for " +
         life.toFixed(1) +
-        " seconds.",
+        " seconds each.",
     );
   }
+  // Each blob of acid flies off in a random direction until it touches a surface,
+  // then eats its way in along a wandering path (dirt and gravel fast, rock slowly,
+  // bedrock never). If it breaks into open air it falls until it lands again.
   function updateAcids(frames) {
     const dt = frames / 60;
     for (let i = acids.length - 1; i >= 0; i--) {
       const a = acids[i];
       a.t += dt;
-      a.life -= dt;
-      if (a.life <= 0) {
-        acids.splice(i, 1);
-        continue;
+      if (a.life !== null) {
+        a.life -= dt;
+        if (a.life <= 0) {
+          acids.splice(i, 1);
+          continue;
+        }
       }
-      if (matAt(a.x, a.y + a.r + 2) === 0) {
-        // nothing under it: it falls like a liquid until it reaches something
-        a.vy = Math.min(9, a.vy + 0.3 * frames);
-        a.y += a.vy * frames;
+      if (a.state === "fly") {
+        const n = Math.max(1, Math.ceil((Math.hypot(a.vx, a.vy) * frames) / 3)),
+          ds = frames / n;
+        for (let k = 0; k < n; k++) {
+          const px = a.x,
+            py = a.y;
+          a.vy += 0.22 * ds;
+          a.x += a.vx * ds;
+          a.y += a.vy * ds;
+          if (gooHit(a.x, a.y)) {
+            a.x = px;
+            a.y = py;
+            a.state = "dig";
+            if (a.life === null) a.life = a.total;
+            // dig in roughly the direction it was travelling, with a lot of random spread
+            const ang =
+              Math.atan2(a.vy, a.vx) + (Math.random() - 0.5) * Math.PI * 0.9;
+            a.hx = Math.cos(ang);
+            a.hy = Math.sin(ang);
+            a.vx = a.vy = 0;
+            a.acc = 0;
+            break;
+          }
+        }
         if (a.y > H() + 30) acids.splice(i, 1);
         continue;
       }
-      a.vy = 0;
       a.acc += frames;
       a.oreT += dt;
       if (a.acc >= 3) {
-        const below = matAt(a.x, a.y + a.r + 2),
-          speed = below === BEDROCK ? 0 : below === ROCK ? 9 : 22, // px per second
+        const ahead = matAt(a.x + a.hx * (a.r + 2), a.y + a.hy * (a.r + 2));
+        if (ahead === 0) {
+          a.state = "fly"; // broke into open air: it falls
+          a.vx = a.vy = 0;
+          a.acc = 0;
+          continue;
+        }
+        const speed = ahead === BEDROCK ? 0 : ahead === ROCK ? 9 : 22, // px per second
           step = speed * (a.acc / 60);
         a.acc = 0;
         S.digScore += carve(a.x, a.y, a.r) / 12;
-        a.y += step; // the pool sinks as the ground goes
+        if (ahead === BEDROCK) {
+          const turn =
+            (Math.random() < 0.5 ? -1 : 1) * (1.8 + Math.random() * 1.2); // bedrock: turn around
+          const c = Math.cos(turn),
+            sn = Math.sin(turn);
+          [a.hx, a.hy] = [a.hx * c - a.hy * sn, a.hx * sn + a.hy * c];
+        } else {
+          a.x = Math.max(a.r, Math.min(W() - a.r, a.x + a.hx * step));
+          a.y += a.hy * step;
+          // the path wanders, with a slight pull downward
+          a.hx += (Math.random() - 0.5) * 0.7;
+          a.hy += (Math.random() - 0.5) * 0.7 + 0.05;
+          const l = Math.hypot(a.hx, a.hy) || 1;
+          a.hx /= l;
+          a.hy /= l;
+        }
       }
       if (a.oreT >= 0.2) {
         a.oreT = 0;
@@ -1525,7 +1603,20 @@
             // explode where the bomb actually is
             if (b.weapon === "dynamite") splitDynamite(b, b.py);
             else if (b.weapon === "acid") spawnAcid(b.px, b.py);
-            else blast(b, b.py);
+            else {
+              // hand grenades can explode critically: a bigger blast
+              const crit = b.weapon === "grenade" ? rollCritical(b) : 0;
+              blast(b, b.py);
+              if (crit) {
+                shake = 11;
+                window.DeepworksUI.note(
+                  "CRITICAL HIT! The blast is " + crit + "% bigger.",
+                );
+              } else if (b.golden) {
+                shake = 10;
+                window.DeepworksUI.note("Golden grenade! A huge blast.");
+              }
+            }
             bombs.splice(i, 1);
           }
         }

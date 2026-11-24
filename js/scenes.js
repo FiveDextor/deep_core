@@ -313,7 +313,12 @@
       const wp = D.weapons[k],
         recipe = Object.entries(wp.recipe)
           .filter(([r]) => r !== "seconds")
-          .map(([r, n]) => n + " " + (r === "grenade" ? "hand grenade" : r))
+          .map(
+            ([r, n]) =>
+              n +
+              " " +
+              ({ grenade: "hand grenade", acidjuice: "acid" }[r] || r),
+          )
           .join(" + ");
       const gooRow = k === "sticky" && (S.skills.stickyGoo || 0) > 0;
       if (
@@ -438,7 +443,7 @@
     );
     E.text(
       g,
-      "Bombs explode 3 s after first impact (dynamite 5 s). Acid grenades leave acid that eats down through the ground. Sticky grenades stay put until what holds them is gone.",
+      "Bombs explode 3 s after first impact (dynamite 5 s). Acid grenades scatter acid that burrows through the ground. Sticky grenades stay put until what holds them is gone.",
       WX,
       634,
       { size: 13, weight: 500, color: "#7f9a93", maxW: 900 },
@@ -582,7 +587,9 @@
               ? "#e9d58b"
               : p.kind === "glass"
                 ? "#aef0f7"
-                : "#9be8a5";
+                : p.kind === "acidjuice"
+                  ? "#c7f23a"
+                  : "#9be8a5";
       E.rr(g, -11, -9, 22, 18, 5);
       g.fillStyle = col;
       g.fill();
@@ -1097,6 +1104,9 @@
     sellerValue: "💰",
     acidDuration: "☣️",
     gasIntake: "💨",
+    acidCount: "🧫",
+    goldenGrenade: "🌟",
+    criticalHit: "🎯",
   };
   const POS = {
     core: [0, 5.2],
@@ -1106,6 +1116,9 @@
     oreYield: [2, 2],
     throwForce: [2, 3],
     acidDuration: [2, 4],
+    acidCount: [3, 4],
+    goldenGrenade: [3, 1],
+    criticalHit: [3, 2],
     stickyRadius: [3, 0],
     stickyGoo: [4, 0],
     generators: [1, 6.5],
@@ -1115,6 +1128,19 @@
     storage: [1, 9],
     sellerSpeed: [2, 8.5],
     sellerValue: [2, 9.5],
+  };
+  // A line describing an upgrade's effect at a given level (shown in the detail panel).
+  const EFFECT = {
+    goldenGrenade: (lv) =>
+      lv ? lv + "% chance · +100% blast radius" : "No golden grenades yet",
+    criticalHit: (lv) =>
+      lv
+        ? 3 * lv + "% chance · +" + (5 + 2 * (lv - 1)) + "% blast radius"
+        : "No critical hits yet",
+    acidCount: (lv) => 3 + lv + " blobs of acid per grenade",
+    acidDuration: (lv) =>
+      "each blob lasts " + (3 + 0.6 * lv).toFixed(1) + " seconds",
+    gasIntake: (lv) => (0.5 * (1 + 0.25 * lv)).toFixed(2) + " gas per second",
   };
   let selUp = "blast";
   const nodeXY = (id) => [
@@ -1314,7 +1340,26 @@
     UI.bar(g, px + 20, y + 22, pw2 - 40, 10, info.lv / info.maxLv, {
       color: info.max ? GOLD : MINT,
     });
-    y += 52;
+    y += 46;
+    if (EFFECT[u.id]) {
+      E.text(g, "Now: " + EFFECT[u.id](info.lv), px + 20, y, {
+        size: 12.5,
+        weight: 700,
+        color: "#cfe0da",
+        maxW: pw2 - 40,
+      });
+      y += 20;
+      if (!info.max) {
+        E.text(g, "Next: " + EFFECT[u.id](info.lv + 1), px + 20, y, {
+          size: 12.5,
+          weight: 600,
+          color: "#9fd3c0",
+          maxW: pw2 - 40,
+        });
+        y += 20;
+      }
+      y += 4;
+    } else y += 6;
     if (u.requires) {
       const rq = byId[u.requires.id];
       E.text(

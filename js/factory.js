@@ -60,6 +60,36 @@
       requires: { id: "blast", level: 3 },
     },
     {
+      id: "acidCount",
+      branch: "Mining",
+      name: "Acid payload",
+      detail:
+        "Acid grenades leave more acid behind: +1 acid per level (3 at level 0). Each one burrows off in its own direction.",
+      base: 130,
+      max: 6,
+      requires: { id: "acidDuration", level: 2 },
+    },
+    {
+      id: "goldenGrenade",
+      branch: "Mining",
+      name: "Golden grenade",
+      detail:
+        "Each hand grenade you place has a chance to be golden: +100% blast radius. 1% chance per level (11% at level 11).",
+      base: 140,
+      max: 11,
+      requires: { id: "grenadeRadius", level: 2 },
+    },
+    {
+      id: "criticalHit",
+      branch: "Mining",
+      name: "Critical explosion",
+      detail:
+        "Hand grenades can explode critically with a bigger blast. Level 1: 3% chance for +5% radius. Level 11: 33% chance for +25% radius.",
+      base: 120,
+      max: 11,
+      requires: { id: "grenadeRadius", level: 2 },
+    },
+    {
       id: "oreYield",
       branch: "Mining",
       name: "Ore recovery",
@@ -178,8 +208,20 @@
   }
   const gasNeed = (product) => recipeOf(product).gas || 0;
   const gasRate = () => 0.5 * (1 + (S.skills.gasIntake || 0) * 0.25); // units per second
-  const GEN_PERIOD = { iron: 3.2, fuel: 1.75, sand: 3, glue: 4.2 },
-    GEN_NAME = { iron: "Fe", fuel: "Fuel", sand: "Sand", glue: "Glue" };
+  const GEN_PERIOD = {
+      iron: 3.2,
+      fuel: 1.75,
+      sand: 3,
+      glue: 4.2,
+      acidjuice: 3.6,
+    },
+    GEN_NAME = {
+      iron: "Fe",
+      fuel: "Fuel",
+      sand: "Sand",
+      glue: "Glue",
+      acidjuice: "Acid",
+    };
   function genKind(t) {
     return t === "ironGen"
       ? "iron"
@@ -189,7 +231,9 @@
           ? "sand"
           : t === "glueGen"
             ? "glue"
-            : null;
+            : t === "acidGen"
+              ? "acidjuice"
+              : null;
   }
   function beltPath(f, a, b) {
     return (
@@ -264,6 +308,7 @@
     if (p.kind === "fuel") return "F";
     if (p.kind === "glue") return "GL";
     if (p.kind === "sand") return "Sd";
+    if (p.kind === "acidjuice") return "Ac";
     if (p.kind === "glass") return "Gl";
     return D.weapons[p.kind === "weapon" ? p.product : p.kind]?.icon || "?";
   }
