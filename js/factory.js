@@ -90,6 +90,35 @@
       requires: { id: "grenadeRadius", level: 2 },
     },
     {
+      id: "volatileAcid",
+      branch: "Mining",
+      name: "Volatile acid",
+      detail:
+        "Acid sticks to ore and eats it, and any blast that touches the acid is bigger: x1.05 per level (x1.25 at level 5). The acid lasts a third shorter.",
+      base: 150,
+      max: 5,
+      requires: { id: "acidCount", level: 2 },
+    },
+    {
+      id: "excavator",
+      branch: "Mining",
+      name: "Excavator",
+      detail:
+        "Blasts do more damage to ore: +6% reach against ore per level (+60% at level 10), so veins break open from further away.",
+      base: 100,
+      requires: { id: "oreYield", level: 2 },
+    },
+    {
+      id: "stickGrenade",
+      branch: "Mining",
+      name: "Grenade sticks",
+      detail:
+        "Each dynamite stick can turn into a hand grenade: 1% chance at level 1, 3% at level 2, 5% at level 3. Needs Dynamite sticks at its maximum level.",
+      base: 200,
+      max: 3,
+      requires: { id: "dynamiteShards", level: 10 },
+    },
+    {
       id: "oreYield",
       branch: "Mining",
       name: "Ore recovery",
@@ -174,6 +203,59 @@
   function cap() {
     return 40 + S.skills.storage * 20;
   }
+  // ---- inventory -----------------------------------------------------------------
+  // One bag for everything you carry: weapons and factory parts. It has a fixed
+  // number of slots; each item type fills as many slots as its stack size needs
+  // (weapons stack to cap() = 40 + Weapon storage upgrades, parts stack to 10).
+  const INV_SLOTS = 24,
+    PART_STACK = 10;
+  const Inv = {
+    SLOTS: INV_SLOTS,
+    store: (kind) => (kind === "part" ? S.partInventory : S.stock),
+    stack: (kind) => (kind === "part" ? PART_STACK : cap()),
+    count: (kind, id) => Inv.store(kind)[id] || 0,
+    used() {
+      let n = 0;
+      for (const kind of ["weapon", "part"])
+        for (const id of Object.keys(Inv.store(kind)))
+          n += Math.ceil(Inv.count(kind, id) / Inv.stack(kind));
+      return n;
+    },
+    // how many more of this item fit (counting free slots and the room left in its own stacks)
+    room(kind, id) {
+      const st = Inv.stack(kind),
+        have = Inv.count(kind, id),
+        others = Inv.used() - Math.ceil(have / st);
+      return Math.max(0, (INV_SLOTS - others) * st - have);
+    },
+    add(kind, id, n = 1) {
+      const k = Math.min(n, Inv.room(kind, id));
+      if (k > 0) Inv.store(kind)[id] = Inv.count(kind, id) + k;
+      return k;
+    },
+    take(kind, id, n = 1) {
+      if (Inv.count(kind, id) < n) return false;
+      Inv.store(kind)[id] -= n;
+      return true;
+    },
+    // the slots as they appear in the bag: weapons first, then parts
+    slots() {
+      const out = [];
+      for (const kind of ["weapon", "part"]) {
+        const ids =
+            kind === "weapon" ? Object.keys(D.weapons) : Object.keys(D.parts),
+          st = Inv.stack(kind);
+        for (const id of ids) {
+          let left = Inv.count(kind, id);
+          while (left > 0) {
+            out.push({ kind, id, count: Math.min(st, left) });
+            left -= st;
+          }
+        }
+      }
+      return out;
+    },
+  };
   function genBuffer() {
     return 10 + S.skills.buffer * 2;
   }
@@ -273,7 +355,7 @@
       find = (t) => f.slots.findIndex((slot, j) => j > i && type(slot) === t),
       want = S.route === "stock" ? "deposit" : "seller",
       found = find(want);
-    if (S.route === "stock" && (S.stock[product] || 0) >= cap()) {
+    if (S.route === "stock" && Inv.room("weapon", product) < 1) {
       let seller = find("seller");
       if (seller >= 0) return seller;
     }
@@ -402,7 +484,7 @@
               })[k] + n,
           )
           .join(" "),
-        text: "CAP " + cap() + " EACH",
+        text: "BAG " + Inv.used() + "/" + INV_SLOTS + " SLOTS",
       };
     }
     return null;
@@ -415,18 +497,55 @@
   F.place = (fi, si) => {
     let t = S.selectedPart;
     if (!t || type(S.floors[fi].slots[si])) return "occupied";
-    if ((S.partInventory[t] || 0) > 0) S.partInventory[t]--;
-    else if (!pay(D.parts[t].cost)) return "material";
+    if (!Inv.take("part", t, 1)) return "none"; // craft it first
     S.floors[fi].slots[si] = {
       type: t,
       progress: 0,
       inputs: { iron: 0, fuel: 0 },
       working: false,
     };
-    S.selectedPart = null;
+    if (!Inv.count("part", t)) S.selectedPart = null;
     S.selectedModule = { fi, si };
     return "ok";
   };
+  // ---- research and crafting -----------------------------------------------------
+  F.RESEARCH = D.research;
+  F.isResearched = (k) => !!S.researched[k];
+  F.researchState = (k) => {
+    const r = D.research[k],
+      done = !!S.researched[k],
+      missing = r.req.filter((x) => !S.researched[x]);
+    return {
+      done,
+      missing,
+      afford: S.money >= r.cost,
+      open: !done && !missing.length,
+      cost: r.cost,
+    };
+  };
+  F.research = (k) => {
+    const st = F.researchState(k);
+    if (!st.open || !st.afford) return false;
+    S.money -= st.cost;
+    S.researched[k] = true;
+    return true;
+  };
+  F.craftCount = (k) => {
+    // how many can be crafted right now (ore and bag space)
+    const cost = D.parts[k].cost;
+    let n = Infinity;
+    for (const [ore, need] of Object.entries(cost))
+      n = Math.min(n, Math.floor((S.ore[ore] || 0) / need));
+    return Math.min(n, Inv.room("part", k));
+  };
+  F.craft = (k, n = 1) => {
+    if (!S.researched[k]) return 0;
+    n = Math.min(n, F.craftCount(k));
+    for (let i = 0; i < n; i++) pay(D.parts[k].cost);
+    if (n > 0) Inv.add("part", k, n);
+    return n;
+  };
+  F.Inv = Inv;
   // Visual hooks: the scene layer sets F.onFx / F.onFloat. Skipped when the
   // factory is fast-forwarding off screen.
   function fx(fi, si, cls) {
@@ -567,7 +686,7 @@
         p.x = Math.min(where, p.x + SPEED * dt);
         if (p.x >= where) {
           if (p.route === "stock") {
-            if ((S.stock[p.product] || 0) >= cap()) {
+            if (Inv.room("weapon", p.product) < 1) {
               let seller = f.slots.findIndex(
                 (slot, j) => j > p.target && type(slot) === "seller",
               );
@@ -580,7 +699,7 @@
               S.packets.splice(i, 1);
               continue;
             }
-            S.stock[p.product]++;
+            Inv.add("weapon", p.product, 1);
             fx(p.fi, p.target, "receive");
           } else {
             let seller = f.slots[p.target];
@@ -749,10 +868,12 @@
     S.selectedFloor = fi;
     if (S.selectedPart) {
       const r = F.place(fi, si);
-      if (r === "material")
-        note("Mine the listed ore to craft this factory part.");
+      if (r === "none")
+        note(
+          "You don't have that part in your bag. Craft it on the Craft page.",
+        );
       else if (r === "occupied")
-        note("That bay is occupied. Unequip it to store the part.");
+        note("That bay is occupied. Right-click it to take the part back.");
       return r;
     }
     S.selectedModule = { fi, si };
@@ -768,15 +889,19 @@
     note("Mine 3 coal and 1 copper to extend this floor.");
     return false;
   };
-  F.removeSelected = () => {
-    const z = S.selectedModule;
-    if (!z) return false;
-    const t = type(S.floors[z.fi] && S.floors[z.fi].slots[z.si]);
-    if (!t) return false;
-    S.partInventory[t] = (S.partInventory[t] || 0) + 1;
-    S.floors[z.fi].slots[z.si] = null;
-    S.selectedModule = null;
-    return true;
+  F.removeAt = (fi, si) => {
+    const t = type(S.floors[fi] && S.floors[fi].slots[si]);
+    if (!t) return "empty";
+    if (Inv.room("part", t) < 1) return "full";
+    Inv.add("part", t, 1);
+    S.floors[fi].slots[si] = null;
+    if (
+      S.selectedModule &&
+      S.selectedModule.fi === fi &&
+      S.selectedModule.si === si
+    )
+      S.selectedModule = null;
+    return "ok";
   };
   F.addFloor = () => {
     if (!pay(FLOOR_COST)) return false;

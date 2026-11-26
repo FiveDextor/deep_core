@@ -593,12 +593,22 @@
   }
   function updateUI() {} // panels are drawn live by the scene
   // A blast carves a true circle out of the terrain, in every direction.
+  // Volatile acid: a blast that touches acid is bigger (x1.05 per level).
+  function acidBoost(x, y) {
+    const lv = S.skills.volatileAcid || 0;
+    if (lv < 1) return 1;
+    for (const a of acids)
+      if (Math.hypot(a.x - x, a.y - y) <= a.r + BOMB_R + 6)
+        return 1 + 0.05 * lv;
+    return 1;
+  }
   function blast(b, py) {
-    const rad = b.r / (1 + S.depth * 0.14);
+    const boost = acidBoost(b.px, py),
+      rad = (b.r * boost) / (1 + S.depth * 0.14);
     S.digScore += carve(b.px, py, rad) / 12;
     terrainDirty = true;
     for (const o of caches) {
-      let effective = rad / o.hardness,
+      let effective = (rad / o.hardness) * oreReach(),
         removed = 0;
       if (
         !o.cells.length ||
@@ -655,6 +665,12 @@
           ? "Dynamite stick detonated!"
           : "BOOM! Hidden veins yield ore only where the blast reaches them.",
     );
+    if (boost > 1)
+      window.DeepworksUI.note(
+        "The acid ate into the rock: this blast is x" +
+          boost.toFixed(2) +
+          " bigger!",
+      );
     updateUI();
   }
   // One small cached sprite per ore: the remaining shape (polygon minus the
@@ -732,6 +748,7 @@
     o.py += dy;
     for (const b of bombs) if (b.stuckOre === o) b.py += dy; // a sticky grenade follows its ore
     for (const g of goo) if (g.ore === o && g.state === "stuck") g.y += dy; // and so does goo
+    for (const a of acids) if (a.ore === o && a.state === "stuck") a.y += dy; // and acid stuck to it
     for (const v of o.verts) v[1] += dy;
     for (const q of o.cells) q[1] += dy;
     for (const c of o.cuts) c.py += dy;
@@ -1288,7 +1305,9 @@
   // through the ground (dirt and gravel quickly, rock slowly, bedrock never) and
   // wears off after a few seconds; the Acid duration upgrade makes it last longer.
   let acids = [];
-  const acidLife = () => 3 + (S.skills.acidDuration || 0) * 0.6;
+  const acidLife = () =>
+    (3 + (S.skills.acidDuration || 0) * 0.6) *
+    ((S.skills.volatileAcid || 0) > 0 ? 2 / 3 : 1);
   const matAt = (x, y) => {
     x = Math.floor(x);
     y = Math.floor(y);
@@ -1298,7 +1317,7 @@
   // Dissolve the ore this acid touches, the same way a blast would (but gently).
   function cutOre(cx, cy, rad) {
     for (const o of caches) {
-      const effective = rad / o.hardness;
+      const effective = (rad / o.hardness) * oreReach();
       if (
         !o.cells.length ||
         Math.abs(o.px - cx) > effective + o.rx ||
@@ -1335,6 +1354,10 @@
     terrainDirty = true;
   }
   const acidCount = () => 3 + (S.skills.acidCount || 0);
+  // Excavator: blasts reach 6% further against ore per level.
+  function oreReach() {
+    return 1 + 0.06 * (S.skills.excavator || 0);
+  }
   function spawnAcid(x, y) {
     const n = acidCount(),
       life = acidLife(),
@@ -1390,11 +1413,20 @@
           a.vy += 0.22 * ds;
           a.x += a.vx * ds;
           a.y += a.vy * ds;
-          if (gooHit(a.x, a.y)) {
+          const hit = gooHit(a.x, a.y);
+          if (hit) {
             a.x = px;
             a.y = py;
-            a.state = "dig";
             if (a.life === null) a.life = a.total;
+            if (hit !== true && (S.skills.volatileAcid || 0) > 0) {
+              // sticks to the ore it touched and eats it, riding along if it falls
+              a.state = "stuck";
+              a.ore = hit;
+              a.vx = a.vy = 0;
+              a.oreT = 0;
+              break;
+            }
+            a.state = "dig";
             // dig in roughly the direction it was travelling, with a lot of random spread
             const ang =
               Math.atan2(a.vy, a.vx) + (Math.random() - 0.5) * Math.PI * 0.9;
@@ -1406,6 +1438,20 @@
           }
         }
         if (a.y > H() + 30) acids.splice(i, 1);
+        continue;
+      }
+      if (a.state === "stuck") {
+        a.oreT += dt;
+        if (!a.ore || !caches.includes(a.ore)) {
+          a.state = "fly"; // its ore is gone
+          a.ore = null;
+          a.vx = a.vy = 0;
+          continue;
+        }
+        if (a.oreT >= 0.2) {
+          a.oreT = 0;
+          cutOre(a.x, a.y, a.r);
+        }
         continue;
       }
       a.acc += frames;
@@ -1558,6 +1604,9 @@
     for (let j = 0; j < count; j++) {
       let a = Math.PI / 4 + (j * Math.PI * 2) / count,
         speed = 5.2 + Math.random() * 1.8;
+      // Grenade sticks: a stick may turn into a hand grenade (1% / 3% / 5% by level)
+      const lv = S.skills.stickGrenade || 0,
+        grenade = lv > 0 && Math.random() * 100 < 2 * lv - 1;
       bombs.push({
         px: b.px,
         py: py - 3,
@@ -1566,8 +1615,11 @@
         angle: a,
         fuseStarted: true,
         fuse: 0.95,
-        r: b.r * 0.58,
-        weapon: "dynamiteShard",
+        r: grenade
+          ? D.weapons.grenade.radius *
+            (1 + S.skills.blast * 0.1 + S.skills.grenadeRadius * 0.08)
+          : b.r * 0.58,
+        weapon: grenade ? "grenade" : "dynamiteShard",
       });
     }
   }

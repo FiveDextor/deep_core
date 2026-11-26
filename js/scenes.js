@@ -12,9 +12,11 @@
   const Scenes = (D.Scenes = {});
   Scenes.current = "mining";
   let introOpen = true,
-    perfOpen = false;
+    perfOpen = false,
+    ctxMenu = null, // right-click menu on a factory bay: {fi, si, x, y}
+    hoverBay = null; // the bay under the pointer this frame
   const P = D.Perf;
-  P.blockers = () => introOpen || perfOpen;
+  P.blockers = () => introOpen || perfOpen || !!Scenes.invOpen || !!ctxMenu;
   // After a self-refresh the game comes back to the same screen without the intro.
   try {
     const r = sessionStorage.getItem("deep-core-refresh");
@@ -64,8 +66,12 @@
   const TABS = [
     { id: "mining", icon: "⛏", label: "Mining" },
     { id: "factory", icon: "🏭", label: "Factory" },
+    { id: "research", icon: "🔬", label: "Research" },
+    { id: "craft", icon: "🔨", label: "Craft" },
     { id: "upgrades", icon: "⬆", label: "Upgrades" },
   ];
+  Scenes.TABS = TABS;
+  const Inv = F.Inv;
   function topBar(g) {
     g.fillStyle = "#0b1518";
     g.fillRect(0, 0, E.VW, 60);
@@ -75,22 +81,33 @@
     E.text(g, "MINE & BUILD", 24, 45, { size: 11, weight: 800, color: DIM });
     TABS.forEach((t, i) => {
       if (
-        UI.button(g, "tab" + t.id, 236 + i * 150, 10, 142, 40, t.label, {
+        UI.button(g, "tab" + t.id, 224 + i * 110, 10, 106, 40, t.label, {
           icon: t.icon,
-          iconSize: 18,
+          iconSize: 15,
           align: "left",
           active: Scenes.current === t.id,
-          size: 15,
+          size: 13,
         })
       )
         Scenes.go(t.id);
     });
-    const stock = Object.values(S.stock).reduce((a, b) => a + b, 0);
-    pill(g, 688, 11, 168, "CREDITS", "¢" + Math.floor(S.money), GOLD);
-    pill(g, 866, 11, 110, "LEVEL", S.depth + 1, MINT);
-    pill(g, 986, 11, 140, "WEAPONS", stock, "#ff9a4d");
+    pill(g, 772, 11, 150, "CREDITS", "¢" + Math.floor(S.money), GOLD);
+    pill(g, 926, 11, 76, "LV", S.depth + 1, MINT);
     if (
-      UI.button(g, "perf", 1142, 10, 122, 40, "Perf", {
+      UI.button(g, "bag", 1008, 10, 122, 40, Inv.used() + "/" + Inv.SLOTS, {
+        icon: "🎒",
+        iconSize: 17,
+        align: "left",
+        active: Scenes.invOpen,
+        size: 14,
+        tip: "Your inventory: weapons and factory parts. Press I to open it from anywhere.",
+      })
+    ) {
+      Scenes.invOpen = !Scenes.invOpen;
+      if (Scenes.invOpen) perfOpen = false;
+    }
+    if (
+      UI.button(g, "perf", 1136, 10, 128, 40, "Perf", {
         icon: "⚙",
         iconSize: 17,
         align: "left",
@@ -98,8 +115,10 @@
         size: 14,
         tip: "Speed and memory settings: picture quality and self-refresh",
       })
-    )
+    ) {
       perfOpen = !perfOpen;
+      if (perfOpen) Scenes.invOpen = false;
+    }
   }
 
   // ---- performance panel -------------------------------------------------------
@@ -830,6 +849,7 @@
       const x = si * H.PITCH;
       const t = H.type(m);
       if (UI.over(x, 40, H.BAY, 70)) {
+        hoverBay = { fi, si, occupied: !!t };
         UI.hovering = true;
         UI.tip(
           t
@@ -857,6 +877,7 @@
   }
 
   function drawFactory(g) {
+    hoverBay = null;
     UI.panel(g, TOWER.x, TOWER.y - 4, TOWER.w, TOWER.h + 4, {
       fill: "#0c161a",
       stroke: "#2a4245",
@@ -898,83 +919,51 @@
       F.addFloor();
     UI.scrollEnd(g);
 
-    // parts panel
+    // side panel: the bag, routing and floor controls
     const x = SIDE.x,
       w = SIDE.w;
     UI.panel(g, x, SIDE.y - 4, w, SIDE.h + 4);
-    E.text(g, "FACTORY PARTS", x + 16, 90, {
+    E.text(g, "INVENTORY", x + 16, 90, { size: 12, weight: 800, color: DIM });
+    E.text(g, Inv.used() + " / " + Inv.SLOTS + " slots", x + w - 16, 90, {
       size: 12,
       weight: 800,
-      color: DIM,
+      color: Inv.used() >= Inv.SLOTS ? "#e0806e" : MINT,
+      align: "right",
     });
-    const partKeys = Object.keys(D.parts),
-      partsY = 98,
-      partsH = 384,
-      scrolled = UI.scrollBegin(
-        g,
-        "parts",
-        x + 4,
-        partsY,
-        w - 8,
-        partsH,
-        8 + partKeys.length * 42,
-      );
-    partKeys.forEach((k, i) => {
-      const p = D.parts[k],
-        stored = S.partInventory[k] || 0,
-        afford = stored > 0 || H.canPay(p.cost);
-      if (
-        UI.button(g, "part" + k, x + 10, 102 + i * 42, w - 20, 38, p.name, {
-          icon: p.icon,
-          iconSize: 18,
-          align: "left",
-          size: 12.5,
-          sub: "Stored " + stored + " · Craft: " + H.costText(p.cost),
-          subSize: 10.5,
-          active: S.selectedPart === k,
-          activeFill: "#4a3d1d",
-          activeStroke: GOLD,
-          subColor: afford ? "#9fd3c0" : "#c98b80",
-          tip: p.detail + " · Cost: " + H.costText(p.cost),
-        })
-      )
-        F.selectPart(k);
-    });
-    UI.scrollEnd(g);
-    {
-      // scroll indicator
-      const total = 8 + partKeys.length * 42,
-        track = partsH - 8;
-      if (total > partsH) {
-        E.rr(g, x + w - 7, partsY + 4, 3, track, 1.5);
-        g.fillStyle = "rgba(255,255,255,.08)";
-        g.fill();
-        const th = Math.max(24, (track * partsH) / total),
-          ty = partsY + 4 + ((track - th) * scrolled) / (total - partsH);
-        E.rr(g, x + w - 7, ty, 3, th, 1.5);
-        g.fillStyle = "rgba(255,255,255,.35)";
-        g.fill();
-      }
-    }
-    E.text(g, "SEND FINISHED WEAPONS TO", x + 16, 494, {
+    const gridH = Scenes.inventoryGrid(g, x + 10, 104, { cell: 48, gap: 4 });
+    let y = 104 + gridH + 8;
+    E.wrap(
+      g,
+      S.selectedPart
+        ? "Placing " + D.parts[S.selectedPart].name + ": click an empty bay."
+        : "Click a part in your bag, then click an empty bay. Right-click a placed part to take it back.",
+      x + 16,
+      y + 8,
+      w - 32,
+      { size: 12, weight: 500, color: S.selectedPart ? GOLD : DIM, lh: 16 },
+    );
+    y += 48;
+    E.text(g, "SEND FINISHED WEAPONS TO", x + 16, y, {
       size: 11,
       weight: 800,
       color: DIM,
     });
-    const hasDep =
-        F.h.type &&
-        S.floors.some((f) => f.slots.some((s) => H.type(s) === "deposit")),
+    y += 12;
+    const hasDep = S.floors.some((f) =>
+        f.slots.some((s) => H.type(s) === "deposit"),
+      ),
       hasSel = S.floors.some((f) =>
         f.slots.some((s) => H.type(s) === "seller"),
       );
     if (
-      UI.button(g, "routeStock", x + 10, 504, (w - 28) / 2, 32, "Deposit", {
-        icon: "📦",
+      UI.button(g, "routeStock", x + 10, y, (w - 28) / 2, 32, "Bag", {
+        icon: "🎒",
         iconSize: 15,
         align: "left",
         active: S.route === "stock",
         disabled: !hasDep,
         size: 13,
+        tip: "Finished weapons go into your inventory (needs a Weapon deposit on the floor).",
       })
     )
       F.setRoute("stock");
@@ -983,7 +972,7 @@
         g,
         "routeSell",
         x + 18 + (w - 28) / 2,
-        504,
+        y,
         (w - 28) / 2,
         32,
         "Seller",
@@ -998,12 +987,13 @@
       )
     )
       F.setRoute("sell");
+    y += 42;
     if (
       UI.button(
         g,
         "addFloor",
         x + 10,
-        544,
+        y,
         w - 20,
         32,
         "Add floor · " + H.costText(F.FLOOR_COST),
@@ -1011,71 +1001,113 @@
       )
     )
       F.addFloor();
-    const sm =
-      S.selectedModule &&
-      H.type(
-        S.floors[S.selectedModule.fi] &&
-          S.floors[S.selectedModule.fi].slots[S.selectedModule.si],
-      );
+    y += 42;
     if (
-      UI.button(
-        g,
-        "removePart",
-        x + 10,
-        582,
-        w - 120,
-        30,
-        "Unequip selected part",
-        {
-          disabled: !sm,
-          size: 12,
-          tip: "Store the selected machine back into your parts inventory.",
-        },
-      )
+      UI.button(g, "craftLink", x + 10, y, w - 128, 32, "Need parts? Craft", {
+        icon: "🔨",
+        iconSize: 15,
+        align: "left",
+        size: 13,
+      })
     )
-      F.removeSelected();
+      Scenes.go("craft");
     if (
       UI.button(
         g,
         "timerText",
-        x + w - 104,
-        582,
-        94,
-        30,
+        x + w - 108,
+        y,
+        98,
+        32,
         "Timer: " + (S.showTimerText === false ? "Off" : "On"),
         { size: 12 },
       )
     )
       F.toggleTimerText();
+    y += 48;
     const fl = S.floors[S.selectedFloor] || S.floors[0];
     E.text(
       g,
-      "Floor " +
-        (S.selectedFloor + 1) +
-        " · " +
-        fl.length +
-        " bays. " +
-        (S.selectedPart
-          ? "Selected: " + D.parts[S.selectedPart].name + ". Tap an empty bay."
-          : "Select a part, then tap an empty bay."),
+      "Floor " + (S.selectedFloor + 1) + " · " + fl.length + " bays",
       x + 16,
-      628,
-      { size: 11, weight: 500, color: DIM, maxW: w - 32 },
+      y,
+      { size: 11.5, weight: 600, color: DIM, maxW: w - 32 },
     );
     E.text(
       g,
       "Packets " +
         S.packets.length +
-        " · Stock " +
+        " · Weapons in bag " +
         H.stockCount() +
-        " · Limit " +
-        H.cap() +
-        "/type · Route: " +
-        (S.route === "stock" ? "deposit" : "sales"),
+        " · Route: " +
+        (S.route === "stock" ? "bag" : "sales"),
       x + 16,
-      648,
-      { size: 11, weight: 500, color: "#7f9a93", maxW: w - 32 },
+      y + 20,
+      { size: 11.5, weight: 500, color: "#7f9a93", maxW: w - 32 },
     );
+  }
+
+  // ---- right-click menu on a factory bay ---------------------------------------
+  function drawContextMenu(g) {
+    const f = S.floors[ctxMenu.fi],
+      m = f && f.slots[ctxMenu.si],
+      t = H.type(m);
+    if (!t) {
+      ctxMenu = null;
+      return;
+    }
+    const w = 236,
+      h = 104,
+      x = clamp(ctxMenu.x + 6, 8, E.VW - w - 8),
+      y = clamp(ctxMenu.y + 6, 66, E.VH - h - 8);
+    if (input.pressed && !UI.over(x, y, w, h)) {
+      ctxMenu = null;
+      return;
+    }
+    UI.panel(g, x, y, w, h, {
+      fill: "rgba(12,22,26,.98)",
+      stroke: "#6aa79c",
+      r: 12,
+      lw: 2,
+    });
+    E.text(g, D.parts[t].icon + "  " + D.parts[t].name, x + 14, y + 20, {
+      size: 13,
+      weight: 800,
+      maxW: w - 28,
+    });
+    if (
+      UI.button(
+        g,
+        "ctxRemove",
+        x + 10,
+        y + 36,
+        w - 20,
+        28,
+        "Remove (back to bag)",
+        {
+          size: 13,
+          icon: "🎒",
+          iconSize: 14,
+          align: "left",
+          fill: "#3a2a24",
+          stroke: "#8a5a45",
+        },
+      )
+    ) {
+      const r = F.removeAt(ctxMenu.fi, ctxMenu.si);
+      if (r === "full")
+        UI.note("Your bag is full: free a slot before removing this part.");
+      else if (r === "ok")
+        UI.note(D.parts[t].name + " removed. It is back in your bag.");
+      ctxMenu = null;
+      return;
+    }
+    if (
+      UI.button(g, "ctxCancel", x + 10, y + 68, w - 20, 26, "Cancel", {
+        size: 12,
+      })
+    )
+      ctxMenu = null;
   }
 
   // ---- upgrades: a research tree -----------------------------------------------
@@ -1107,6 +1139,9 @@
     acidCount: "🧫",
     goldenGrenade: "🌟",
     criticalHit: "🎯",
+    excavator: "🚜",
+    stickGrenade: "🎆",
+    volatileAcid: "☢️",
   };
   const POS = {
     core: [0, 5.2],
@@ -1117,6 +1152,9 @@
     throwForce: [2, 3],
     acidDuration: [2, 4],
     acidCount: [3, 4],
+    volatileAcid: [4, 4],
+    excavator: [3, 3],
+    stickGrenade: [3, 5],
     goldenGrenade: [3, 1],
     criticalHit: [3, 2],
     stickyRadius: [3, 0],
@@ -1138,6 +1176,17 @@
         ? 3 * lv + "% chance · +" + (5 + 2 * (lv - 1)) + "% blast radius"
         : "No critical hits yet",
     acidCount: (lv) => 3 + lv + " blobs of acid per grenade",
+    excavator: (lv) => "+" + 6 * lv + "% blast reach against ore",
+    stickGrenade: (lv) =>
+      lv
+        ? 2 * lv - 1 + "% per stick to become a grenade"
+        : "No sticks become grenades",
+    volatileAcid: (lv) =>
+      lv
+        ? "blasts touching acid x" +
+          (1 + 0.05 * lv).toFixed(2) +
+          " · acid lasts 1/3 less"
+        : "Acid is plain acid",
     acidDuration: (lv) =>
       "each blob lasts " + (3 + 0.6 * lv).toFixed(1) + " seconds",
     gasIntake: (lv) => (0.5 * (1 + 0.25 * lv)).toFixed(2) + " gas per second",
@@ -1147,12 +1196,12 @@
     TREE.x + 14 + POS[id][0] * COL_W,
     TREE.y + 18 + POS[id][1] * ROW_UP,
   ];
-  function treeEdge(g, a, b, on) {
+  function treeEdge(g, a, b, on, off = 10) {
     const ax = a[0] + NODE_W,
       ay = a[1] + NODE_H / 2,
       bx = b[0],
       by = b[1] + NODE_H / 2,
-      mx = (ax + bx) / 2;
+      mx = ax + off;
     g.lineCap = g.lineJoin = "round";
     g.lineWidth = 4;
     g.strokeStyle = on ? "#3fae8c" : "#223234";
@@ -1193,7 +1242,13 @@
     for (const u of ups) {
       const parent = u.requires ? u.requires.id : "core",
         on = !u.requires || (S.skills[u.requires.id] || 0) >= u.requires.level;
-      treeEdge(g, nodeXY(parent), nodeXY(u.id), on);
+      treeEdge(
+        g,
+        nodeXY(parent),
+        nodeXY(u.id),
+        on,
+        4 + (Math.round(POS[parent][1] * 2) % 3) * 6,
+      );
     }
     // the core
     {
@@ -1545,6 +1600,7 @@
       rowFx.forEach((f) => f && f.update(dt));
     } else trucks.length = 0;
     upFx.update(dt);
+    if (Scenes.updatePages) Scenes.updatePages(dt);
     if (born.size > S.packets.length + 80) {
       const live = new Set(S.packets.map((p) => p.id));
       for (const id of born.keys()) if (!live.has(id)) born.delete(id);
@@ -1553,15 +1609,21 @@
   Scenes.draw = (g) => {
     UI.beginFrame();
     background(g);
-    UI.blocked = introOpen || perfOpen;
+    UI.blocked = introOpen || perfOpen || !!Scenes.invOpen || !!ctxMenu;
     const s = Scenes.current;
     if (s === "mining") drawMining(g);
     else if (s === "factory") drawFactory(g);
+    else if (Scenes.pages && Scenes.pages[s]) Scenes.pages[s](g);
     else drawUpgrades(g);
-    UI.blocked = introOpen;
+    UI.blocked = introOpen || !!ctxMenu;
     topBar(g);
     messageBar(g);
+    UI.blocked = introOpen || !!ctxMenu;
+    if (Scenes.invOpen && !introOpen && Scenes.drawInventoryPanel)
+      Scenes.drawInventoryPanel(g);
     if (perfOpen && !introOpen) drawPerf(g);
+    UI.blocked = false;
+    if (ctxMenu && !introOpen) drawContextMenu(g);
     if (introOpen) drawIntro(g);
     UI.blocked = false;
     UI.endFrame(g);
@@ -1571,23 +1633,56 @@
   const inWorld = (x, y) =>
     x >= WX && x <= WX + 900 && y >= WY && y <= WY + 520;
   E.on.down = (x, y) => {
-    if (introOpen || perfOpen || Scenes.current !== "mining") return;
+    if (
+      introOpen ||
+      perfOpen ||
+      Scenes.invOpen ||
+      ctxMenu ||
+      Scenes.current !== "mining"
+    )
+      return;
     if (inWorld(x, y)) M.pointerDown(x - WX, y - WY);
   };
   E.on.move = (x, y) => {
-    if (introOpen || perfOpen || Scenes.current !== "mining") return;
+    if (
+      introOpen ||
+      perfOpen ||
+      Scenes.invOpen ||
+      ctxMenu ||
+      Scenes.current !== "mining"
+    )
+      return;
     if (M.aiming() || inWorld(x, y)) M.pointerMove(x - WX, y - WY);
   };
   E.on.up = (x, y, ok) => {
     if (M.aiming()) M.pointerUp(x - WX, y - WY, ok);
   };
+  // right click (or a long press on a touch screen) on a placed factory part
+  E.on.context = () => {
+    if (introOpen || perfOpen || Scenes.invOpen || ctxMenu) return false;
+    if (Scenes.current === "factory" && hoverBay && hoverBay.occupied) {
+      ctxMenu = { fi: hoverBay.fi, si: hoverBay.si, x: input.x, y: input.y };
+      return true;
+    }
+    return false;
+  };
   E.on.key = (e) => {
-    if (introOpen || perfOpen) return;
+    if (introOpen) return;
+    if (e.key === "Escape") {
+      ctxMenu = null;
+      perfOpen = false;
+      Scenes.invOpen = false;
+      return;
+    }
+    if (perfOpen || ctxMenu) return;
+    if (e.key === "i" || e.key === "I") {
+      Scenes.invOpen = !Scenes.invOpen;
+      return;
+    }
+    if (Scenes.invOpen) return;
     if (e.code === "Space" && Scenes.current === "mining") {
       e.preventDefault();
       M.drop();
-    } else if (e.key === "1") Scenes.go("mining");
-    else if (e.key === "2") Scenes.go("factory");
-    else if (e.key === "3") Scenes.go("upgrades");
+    } else if (e.key >= "1" && e.key <= "5") Scenes.go(TABS[+e.key - 1].id);
   };
 })();

@@ -62,6 +62,23 @@
     },
   };
   // Materials made by a combinator (they travel on the conveyor like iron or fuel).
+  // Factory parts must be researched (for credits) before they can be crafted.
+  // req = parts that must be researched first. cost 0 = known from the start.
+  D.research = {
+    ironGen: { cost: 0, req: [] },
+    fuelGen: { cost: 0, req: [] },
+    grenadeCtor: { cost: 0, req: [] },
+    deposit: { cost: 0, req: [] },
+    seller: { cost: 0, req: [] },
+    sandGen: { cost: 120, req: [] },
+    glueGen: { cost: 100, req: [] },
+    acidGen: { cost: 200, req: [] },
+    dynamiteCtor: { cost: 150, req: ["grenadeCtor"] },
+    stickyCtor: { cost: 200, req: ["glueGen", "grenadeCtor"] },
+    chargeCtor: { cost: 250, req: ["dynamiteCtor"] },
+    combinator: { cost: 180, req: ["sandGen"] },
+    acidCtor: { cost: 300, req: ["combinator", "acidGen"] },
+  };
   D.materials = {
     glass: {
       name: "Glass",
@@ -175,6 +192,13 @@
     route: "stock",
     showTimerText: true,
     partInventory: {},
+    researched: {
+      ironGen: true,
+      fuelGen: true,
+      grenadeCtor: true,
+      deposit: true,
+      seller: true,
+    },
     skills: {
       blast: 0,
       oreYield: 0,
@@ -188,6 +212,9 @@
       acidCount: 0,
       goldenGrenade: 0,
       criticalHit: 0,
+      excavator: 0,
+      volatileAcid: 0,
+      stickGrenade: 0,
       generators: 0,
       assembly: 0,
       buffer: 0,
@@ -232,6 +259,11 @@
     try {
       let d = JSON.parse(localStorage.getItem(KEY)) || null;
       if (d && d.state) {
+        // saves from before research existed already had every part: keep them all
+        if (!d.state.researched)
+          d.state.researched = Object.fromEntries(
+            Object.keys(D.parts).map((k) => [k, true]),
+          );
         Object.assign(D.state, d.state);
         D.mineSave = d.mine || null;
       }
@@ -240,6 +272,11 @@
         D.state.stock || {},
       );
       D.state.partInventory = D.state.partInventory || {};
+      // saves from before research existed already had every part: keep them all
+      if (!D.state.researched)
+        D.state.researched = Object.fromEntries(
+          Object.keys(D.parts).map((k) => [k, true]),
+        );
       if (typeof D.state.showTimerText !== "boolean")
         D.state.showTimerText = true;
       D.state.skills = Object.assign(
@@ -256,6 +293,9 @@
           acidCount: 0,
           goldenGrenade: 0,
           criticalHit: 0,
+          excavator: 0,
+          volatileAcid: 0,
+          stickGrenade: 0,
           generators: 0,
           assembly: 0,
           buffer: 0,

@@ -39,7 +39,7 @@
     touch: false,
     id: null,
   });
-  E.on = { down: null, move: null, up: null, key: null };
+  E.on = { down: null, move: null, up: null, key: null, context: null };
   E.onResize = [];
 
   function resize() {
@@ -58,9 +58,20 @@
   const vx = (e) => (e.clientX - E.ox) / E.scale,
     vy = (e) => (e.clientY - E.oy) / E.scale;
 
+  let pressTimer = null;
   canvas.addEventListener("pointerdown", (e) => {
     if (input.id !== null && e.pointerId !== input.id) return;
-    if (e.button !== undefined && e.button > 0) return;
+    if (e.button !== undefined && e.button > 0) {
+      // right click: open the context menu for whatever is under the pointer
+      if (e.button === 2) {
+        e.preventDefault();
+        input.touch = false;
+        input.x = vx(e);
+        input.y = vy(e);
+        if (E.on.context) E.on.context(input.x, input.y);
+      }
+      return;
+    }
     e.preventDefault();
     input.id = e.pointerId;
     input.touch = e.pointerType === "touch";
@@ -72,6 +83,18 @@
       canvas.setPointerCapture(e.pointerId);
     } catch (_) {}
     if (E.on.down) E.on.down(input.x, input.y);
+    // touch screens: hold still for half a second = right click
+    clearTimeout(pressTimer);
+    if (input.touch)
+      pressTimer = setTimeout(() => {
+        if (
+          input.down &&
+          !input.dragged &&
+          E.on.context &&
+          E.on.context(input.x, input.y)
+        )
+          input.dragged = true; // handled: don't also count it as a tap
+      }, 520);
   });
   canvas.addEventListener("pointermove", (e) => {
     if (input.id !== null && e.pointerId !== input.id) return;
@@ -87,6 +110,7 @@
   });
   const end = (e, ok) => {
     if (e.pointerId !== input.id) return;
+    clearTimeout(pressTimer);
     input.x = vx(e);
     input.y = vy(e);
     if (ok) input.released = true;
